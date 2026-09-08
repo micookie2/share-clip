@@ -1,0 +1,9 @@
+# 构建产物与运行数据
+/bin/
+/.cache/
+/.smoke/
+
+# SQLite 数据库（server 运行生成）
+*.db
+*.db-shm
+*.db-wal

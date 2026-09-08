@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 格式检查
+        run: |
+          unformatted="$(gofmt -l cmd internal)"
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未通过 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test -race -count=1 ./...
+
+  # client/server 都要能在 Windows 上编译并跑通测试（剪贴板走 Win32 API）。
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go test -count=1 ./...
+
+  cross-compile:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 交叉编译
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -o /dev/null ./cmd/server
+          go build -o /dev/null ./cmd/client

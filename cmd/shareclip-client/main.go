@@ -1,0 +1,85 @@
+// share-clip client: watches the local clipboard and shares text/image
+// content through the share-clip server with every other running client.
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/micookie2/share-clip/internal/agent"
+	"github.com/micookie2/share-clip/internal/cli"
+	"github.com/micookie2/share-clip/internal/protocol"
+)
+
+const version = "0.1.0"
+
+func main() {
+	fs := cli.New("shareclip-client")
+	var (
+		serverAddr = fs.String("s", "server", "", "share-clip server 地址，如 192.168.1.10:9000（必填）")
+		name       = fs.String("n", "name", "", "本机显示名（默认使用主机名）")
+		pollMs     = fs.Int("p", "poll", 1000, "剪贴板轮询间隔（毫秒）；Linux 生效，Windows 由系统事件驱动")
+		maxPayload = fs.Int("m", "max-payload", protocol.DefaultMaxPayload, "单条剪贴板内容最大字节数")
+		quiet      = fs.Bool("q", "quiet", false, "减少日志输出")
+		showVer    = fs.Bool("v", "version", false, "显示版本并退出")
+	)
+	fs.SetIntro(fmt.Sprintf(`share-clip client %s
+用法: shareclip-client -s <host:port>
+
+启动后本机每次复制文本或图片都会广播到 server 上的其它客户端；
+收到的广播会自动写入本机剪贴板。文件复制暂不支持，会被忽略。
+每个选项都有等价的长写法（-s 即 --server），见下面的列表。`, version))
+	fs.Parse()
+	if *showVer {
+		fmt.Println(version)
+		return
+	}
+	if *serverAddr == "" {
+		log.Fatal("请用 -s 指定 server 地址，例如 shareclip-client -s 192.168.1.10:9000")
+	}
+
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	displayName := *name
+	if displayName == "" {
+		displayName = host
+	}
+
+	cfg := agent.Config{
+		ServerAddr:     *serverAddr,
+		ClientID:       fmt.Sprintf("%s-%d-%s", host, os.Getpid(), randHex(4)),
+		Name:           displayName,
+		PollIntervalMs: *pollMs,
+		MaxPayload:     *maxPayload,
+		Quiet:          *quiet,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	log.Printf("share-clip client %s（%s）启动，server: %s", version, displayName, *serverAddr)
+	if err := agent.Run(ctx, cfg); err != nil {
+		log.Fatalf("client 退出: %v", err)
+	}
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "randfail"
+	}
+	const hex = "0123456789abcdef"
+	out := make([]byte, n*2)
+	for i, v := range b {
+		out[i*2] = hex[v>>4]
+		out[i*2+1] = hex[v&0x0f]
+	}
+	return string(out)
+}
