@@ -1,20 +1,46 @@
 GO ?= go
 BIN := bin
 
-.PHONY: all build build-windows test vet fmt icon icon-windows clean run-server
+# ── 构建信息 ────────────────────────────────────────────────────────────────
+# 编译期通过 -ldflags -X 写进 internal/buildinfo，启动日志、-v 与 Web 页面
+# 都从这里取值。没有 make（直接 go build）时自动回退到 Go 自带的 VCS 标记。
+BUILDINFO := github.com/micookie2/share-clip/internal/buildinfo
+VERSION   ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null)
+COMMIT    ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+DIRTY     := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true)
+
+# 注意：GNU make 的 ifdef 对「定义但为空」的变量也会判真，故用 ifneq 显式判空，
+# 免得 git describe 没有 tag 时把版本号覆盖成空字符串。
+LDFLAGS := -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).BuildTime=$(BUILD_TIME)
+ifneq ($(VERSION),)
+LDFLAGS += -X $(BUILDINFO).Version=$(VERSION)
+endif
+ifneq ($(DIRTY),)
+LDFLAGS += -X $(BUILDINFO).Dirty=true
+endif
+
+.PHONY: all build build-windows test vet fmt icon icon-windows clean run-server version
 
 all: build
 
 build:
 	@mkdir -p $(BIN)
-	$(GO) build -o $(BIN)/shareclip-server ./cmd/shareclip-server
-	$(GO) build -o $(BIN)/shareclip-client ./cmd/shareclip-client
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-server ./cmd/shareclip-server
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-client ./cmd/shareclip-client
 
 # Windows binaries can be cross-compiled from Linux/macOS or built natively.
 build-windows:
 	@mkdir -p $(BIN)
-	GOOS=windows GOARCH=amd64 $(GO) build -o $(BIN)/shareclip-server.exe ./cmd/shareclip-server
-	GOOS=windows GOARCH=amd64 $(GO) build -o $(BIN)/shareclip-client.exe ./cmd/shareclip-client
+	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-server.exe ./cmd/shareclip-server
+	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-client.exe ./cmd/shareclip-client
+
+# 打印本次会注入的构建信息（Release 前自检用）。
+version:
+	@echo "version    = $(if $(VERSION),$(VERSION),<buildinfo 默认值>)"
+	@echo "commit     = $(COMMIT)$(if $(DIRTY), (+dirty))"
+	@echo "build time = $(BUILD_TIME) UTC"
+	@echo "ldflags    = $(LDFLAGS)"
 
 test:
 	$(GO) test -count=1 ./...

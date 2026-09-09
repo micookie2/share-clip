@@ -11,14 +11,14 @@ import (
 	"syscall"
 
 	"github.com/micookie2/share-clip/internal/agent"
+	"github.com/micookie2/share-clip/internal/buildinfo"
 	"github.com/micookie2/share-clip/internal/cli"
 	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
 )
 
-const version = "0.1.0"
-
 func main() {
+	build := buildinfo.Get()
 	fs := cli.New("shareclip-client")
 	var (
 		serverAddr = fs.String("s", "server", "", "share-clip server 地址，如 192.168.1.10:9000（必填）")
@@ -26,17 +26,17 @@ func main() {
 		pollMs     = fs.Int("p", "poll", 1000, "剪贴板轮询间隔（毫秒）；Linux 生效，Windows 由系统事件驱动")
 		maxPayload = fs.Int("m", "max-payload", protocol.DefaultMaxPayload, "单条剪贴板内容最大字节数")
 		quiet      = fs.Bool("q", "quiet", false, "减少日志输出")
-		showVer    = fs.Bool("v", "version", false, "显示版本并退出")
+		showVer    = fs.Bool("v", "version", false, "显示版本号与构建信息后退出")
 	)
 	fs.SetIntro(fmt.Sprintf(`share-clip client %s
 用法: shareclip-client -s <host:port>
 
 启动后本机每次复制文本或图片都会广播到 server 上的其它客户端；
 收到的广播会自动写入本机剪贴板。文件复制暂不支持，会被忽略。
-每个选项都有等价的长写法（-s 即 --server），见下面的列表。`, version))
+每个选项都有等价的长写法（-s 即 --server），见下面的列表。`, build.Version))
 	fs.Parse()
 	if *showVer {
-		fmt.Println(version)
+		fmt.Println(build.Summary())
 		return
 	}
 	if *serverAddr == "" {
@@ -64,7 +64,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logx.Printf("share-clip client %s（%s）启动，server: %s", version, displayName, *serverAddr)
+	logx.Printf("share-clip client %s（%s）启动，server: %s（commit %s，构建于 %s）",
+		build.Version, displayName, *serverAddr, build.Commit, build.BuiltLocal())
 	if err := agent.Run(ctx, cfg); err != nil {
 		logx.Fatalf("client 退出: %v", err)
 	}

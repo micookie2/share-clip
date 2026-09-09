@@ -60,6 +60,8 @@ is silently ignored.
 - A client does not push its current clipboard on startup, and a newly joined
   client does not receive backlog history — use the web page to push old entries
   on demand.
+- **One log line per event**: clipboard text, machine names and errors are
+  escaped before printing (`\n`, `\t` appear literally), so grep works.
 - Plaintext, no authentication: designed for a trusted LAN.
 - Payload cap defaults to **32 MiB** (tune with `-m`); larger copies are ignored.
 
@@ -100,6 +102,39 @@ go install github.com/micookie2/share-clip/cmd/shareclip-client@latest
 No prebuilt binaries are committed (`bin/` is gitignored). The commands above
 were verified with Go 1.25.6 on linux/amd64 and windows/amd64.
 
+## Version and build metadata
+
+`internal/buildinfo` holds the metadata; `make build` / `make build-windows`
+stamp it in at link time with `-ldflags -X`:
+
+| Field | Source | Notes |
+| --- | --- | --- |
+| `Version` | `git describe --tags --exact-match HEAD` | the tag on HEAD, else the default in the source |
+| `Commit` | `git rev-parse --short=7 HEAD` | 7-character short SHA |
+| `BuildTime` | `date -u +%Y-%m-%dT%H:%M:%SZ` | the link instant (UTC), shown in local time |
+| `Dirty` | `git status --porcelain` | appends `+dirty` when the tree has local changes |
+
+```bash
+make version        # show what the next build would inject
+```
+
+Three places consume it:
+
+```bash
+$ ./bin/shareclip-server -v
+v0.1.0 (commit 0be9e27, built 2026-09-09 13:00:11 +0800, go1.25.6 linux/amd64)
+
+$ ./bin/shareclip-server
+2026-09-09 13:00:20 share-clip server v0.1.0 启动（commit 0be9e27，构建于 2026-09-09 13:00:11 +0800）
+```
+
+The web page shows `· v0.1.0` in the header subtitle (hover for commit and build
+time) plus a full line at the bottom, read from `GET /api/version`.
+
+`go build` / `go install` bypass make, so no `-ldflags` are applied: `Commit`
+and the build instant then fall back to the VCS stamps Go embeds automatically
+(commit SHA and commit time), and the version keeps its in-source default.
+
 ## Usage
 
 ```bash
@@ -124,7 +159,7 @@ Every option has a single-letter short form, and `-h` prints the full list.
 | `-l` | `--history-limit` | `500` | how many history entries to keep |
 | `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry |
 | `-q` | `--quiet` | false | less logging |
-| `-v` | `--version` | — | print version and exit |
+| `-v` | `--version` | — | print version and build metadata (commit, build time, Go/platform) and exit |
 
 ### Client options
 
@@ -135,7 +170,7 @@ Every option has a single-letter short form, and `-h` prints the full list.
 | `-p` | `--poll` | `1000` | clipboard polling interval in ms (Linux only) |
 | `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry |
 | `-q` | `--quiet` | false | less logging |
-| `-v` | `--version` | — | print version and exit |
+| `-v` | `--version` | — | print version and build metadata (commit, build time, Go/platform) and exit |
 
 Short and long forms are interchangeable (`-s`, `-server` and `--server` all
 work; values can be `-s host:port` or `-s=host:port`), so existing autostart
@@ -159,10 +194,13 @@ entries keep working unchanged.
   into **every** currently online client regardless of origin, with a toast for
   the result.
 - "Clear" wipes the database; other open pages clear in real time.
+- The server **version and build time** appear in the header and at the bottom
+  of the list (stamped in at compile time, see "Version and build metadata").
 - Flat, quiet UI: white cards with 1px borders, solid accent colour (no
   gradients, no drop shadows), automatic light/dark theme, mobile friendly.
 
-APIs: `GET /api/status` (online node snapshot), `GET /api/events` (SSE stream of
+APIs: `GET /api/status` (online node snapshot), `GET /api/version` (version,
+commit, build time, Go version/platform), `GET /api/events` (SSE stream of
 `status` / `clip` / `cleared`).
 
 ## Layout
@@ -176,8 +214,10 @@ internal/agent/         client logic: clipboard watch, send/receive, reconnect
 internal/clipboard/     cross-platform clipboard abstraction + watcher
   clipboard_windows.go  Win32: CF_UNICODETEXT / CF_DIB (stdlib syscall)
   clipboard_linux.go    Linux: xclip / wl-clipboard
+internal/buildinfo/     version/commit/build time (-ldflags; logs, -v, web UI)
 internal/dib/           pure-Go DIB↔PNG codec (Windows images)
 internal/cli/           options with long name + single-letter alias sharing one var
+internal/logx/          logging entry point: one event always occupies one line
 internal/protocol/      message framing (JSON header + binary payload)
 internal/server/        WS hub, broadcast, SSE events, web API, embedded page
 internal/store/         SQLite history (trim / pagination / content reads)

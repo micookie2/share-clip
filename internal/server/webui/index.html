@@ -203,6 +203,14 @@ pre.full.show { display: block; }
 #moreRow { text-align: center; margin: 16px 0 4px; }
 #countHint { text-align: center; color: var(--faint); font-size: 12px; margin-top: 14px; }
 
+/* 构建信息（版本号与构建时间由编译期注入，启动时从 /api/version 取） */
+#buildInfo {
+  text-align: center; color: var(--faint); font-size: 12px; margin: 24px 0 10px;
+  user-select: none;
+}
+#buildInfo .sep { margin: 0 7px; color: var(--line-strong); }
+#buildInfo b { font-weight: 600; color: var(--muted); }
+
 /* jump-to-latest */
 #jump {
   position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
@@ -276,7 +284,7 @@ pre.full.show { display: block; }
       </div>
       <div>
         <h1>share-clip</h1>
-        <small>局域网剪贴板共享 · 实时同步</small>
+        <small>局域网剪贴板共享 · 实时同步<span id="verTag"></span></small>
       </div>
     </div>
 
@@ -306,6 +314,7 @@ pre.full.show { display: block; }
   <div id="list"></div>
   <div id="moreRow"><button class="btn" id="moreBtn" onclick="loadMore()" hidden>加载更多</button></div>
   <div id="countHint"></div>
+  <div id="buildInfo"></div>
 </main>
 
 <button id="jump" onclick="jumpTop()">
@@ -603,6 +612,39 @@ async function clearAll() {
   } catch (e) { toast("清空失败: " + e, "err"); }
 }
 
+/* ---------------- build info ---------------- */
+
+// 版本号与构建时间在编译期注入（见 Makefile），页面启动时取一次就固定。
+function builtText(b) {
+  const raw = b.buildTime || "";
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw || "未知";
+  const d = new Date(raw);
+  if (isNaN(d)) return raw;
+  const p = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+         " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
+async function loadBuildInfo() {
+  try {
+    const r = await fetch("/api/version");
+    if (!r.ok) return;
+    const b = await r.json();
+    const ver = String(b.version || "").replace(/^v/, "");
+    const built = builtText(b);
+    const tag = $("verTag");
+    tag.textContent = ver ? " · v" + ver : "";
+    tag.title = "commit " + (b.commit || "?") + " · 构建于 " + built;
+
+    const bits = ['share-clip <b>v' + esc(ver || "?") + '</b>'];
+    if (b.commit && b.commit !== "unknown") bits.push("commit " + esc(b.commit));
+    bits.push("构建于 " + esc(built));
+    if (b.goVersion) bits.push(esc(b.goVersion + (b.platform ? " " + b.platform : "")));
+    if (b.modified) bits.push("工作区有未提交改动");
+    $("buildInfo").innerHTML = bits.join('<span class="sep">·</span>');
+  } catch (e) { /* 版本信息缺失不影响页面功能 */ }
+}
+
 /* ---------------- presence + realtime (SSE) ---------------- */
 
 function toggleRoster(ev) {
@@ -683,6 +725,7 @@ function connect() {
 /* ---------------- boot ---------------- */
 
 fullRefresh();
+loadBuildInfo();
 connect();
 setInterval(syncLatest, 30000);          // low-frequency safety net
 </script>

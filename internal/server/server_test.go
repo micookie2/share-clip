@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/micookie2/share-clip/internal/buildinfo"
 	"github.com/micookie2/share-clip/internal/protocol"
 	"github.com/micookie2/share-clip/internal/server"
 )
@@ -367,6 +369,54 @@ func TestIconAssets(t *testing.T) {
 		}
 		if !bytes.HasPrefix(body, []byte(c.marker)) {
 			t.Fatalf("GET %s: body does not start with %q", c.path, c.marker)
+		}
+	}
+}
+
+// The web UI reads the stamped build metadata from /api/version and shows it
+// in the header and the footer; a plain `go test` build knows nothing about
+// ldflags, so only the shape is asserted here.
+func TestVersionEndpoint(t *testing.T) {
+	s := startServer(t)
+	defer s.Close()
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/version")
+	if err != nil {
+		t.Fatalf("GET /api/version: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Version   string `json:"version"`
+		Commit    string `json:"commit"`
+		BuildTime string `json:"buildTime"`
+		GoVersion string `json:"goVersion"`
+		Platform  string `json:"platform"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := buildinfo.Get()
+	if body.Version != want.Version || body.Commit != want.Commit || body.BuildTime != want.BuildTime {
+		t.Errorf("/api/version = %+v, want the build's own metadata %+v", body, want)
+	}
+	if body.GoVersion == "" || !strings.Contains(body.Platform, "/") {
+		t.Errorf("/api/version lacks runtime info: %+v", body)
+	}
+
+	page, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	html, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	for _, marker := range []string{`id="buildInfo"`, `id="verTag"`, `"/api/version"`} {
+		if !strings.Contains(string(html), marker) {
+			t.Errorf("index.html does not reference %s", marker)
 		}
 	}
 }

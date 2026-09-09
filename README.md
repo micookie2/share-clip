@@ -52,6 +52,8 @@
   连续复制同一段内容同样只广播第一次。Web 页“推送”不写历史，不受影响。
 - client 启动时不会自动推送当前剪贴板，新加入的 client 也不会自动收到历史；
   需要旧内容时在 Web 页手动推送。
+- **日志一行一条**：剪贴板内容、机器名等可能带换行的文本在打印前统一转义
+  （`\n`、`\t` 等按字面量显示），方便直接 grep server 日志。
 - 明文传输、无鉴权，默认面向可信局域网。
 - 单条内容上限默认 **32 MiB**（`-m` 可调），超限的复制会被忽略。
 
@@ -90,6 +92,39 @@ go install github.com/micookie2/share-clip/cmd/shareclip-client@latest
 仓库不附带预编译二进制（`bin/` 已被 `.gitignore` 忽略），上面的构建方式在
 Go 1.25.6 (linux/amd64 与 windows/amd64) 下验证通过。
 
+## 版本号与构建信息
+
+版本元数据放在 `internal/buildinfo`，`make build` / `make build-windows` 会在
+链接期用 `-ldflags -X` 写入四样东西：
+
+| 字段 | 来源 | 说明 |
+| --- | --- | --- |
+| `Version` | `git describe --tags --exact-match HEAD` | HEAD 上有 tag 就用 tag，否则用源码里的默认值 |
+| `Commit` | `git rev-parse --short=7 HEAD` | 7 位短 SHA |
+| `BuildTime` | `date -u +%Y-...%SZ` | 链接瞬间的 UTC 时间，日志/页面按本地时区显示 |
+| `Dirty` | `git status --porcelain` | 工作区有未提交改动时版本串带 `+dirty` |
+
+```bash
+make version        # 查看本次将要注入的值
+```
+
+三个地方会用到它：
+
+```bash
+$ ./bin/shareclip-server -v
+v0.1.0 (commit 0be9e27, built 2026-09-09 13:00:11 +0800, go1.25.6 linux/amd64)
+
+$ ./bin/shareclip-server
+2026-09-09 13:00:20 share-clip server v0.1.0 启动（commit 0be9e27，构建于 2026-09-09 13:00:11 +0800）
+```
+
+Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时间），列表底部另有一行
+完整构建信息。数据来自 `GET /api/version`。
+
+`go build` / `go install` 不经过 make，也就没有 `-ldflags`；此时 `Commit` 与构建
+时间自动回退到 Go 工具链自带的 VCS 标记（提交 SHA 与提交时间），版本号仍是源码里的
+默认值，因此不会显示成空白。
+
 ## 使用
 
 ```bash
@@ -114,7 +149,7 @@ Go 1.25.6 (linux/amd64 与 windows/amd64) 下验证通过。
 | `-l` | `--history-limit` | `500` | 历史保留条数，超出自动清理最旧 |
 | `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
 | `-q` | `--quiet` | false | 减少日志 |
-| `-v` | `--version` | — | 打印版本后退出 |
+| `-v` | `--version` | — | 打印版本号与构建信息（commit、构建时间、Go 版本/平台）后退出 |
 
 ### client 参数
 
@@ -125,7 +160,7 @@ Go 1.25.6 (linux/amd64 与 windows/amd64) 下验证通过。
 | `-p` | `--poll` | `1000` | 剪贴板轮询间隔毫秒（Linux 生效） |
 | `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
 | `-q` | `--quiet` | false | 减少日志 |
-| `-v` | `--version` | — | 打印版本后退出 |
+| `-v` | `--version` | — | 打印版本号与构建信息（commit、构建时间、Go 版本/平台）后退出 |
 
 简写与长写法完全等价（`-s`、`-server`、`--server` 三种都能用，取值可写
 `-s 1.2.3.4:9000` 或 `-s=1.2.3.4:9000`），因此老命令、开机自启脚本里的
@@ -146,11 +181,13 @@ Go 1.25.6 (linux/amd64 与 windows/amd64) 下验证通过。
 - 每条记录有“推送到全部在线客户端”按钮（向**所有**当前在线 client 写入该
   内容，与来源无关），操作结果以 toast 提示；
 - “清空”按钮清空数据库，其它已打开的页面实时同步清空；
+- 顶部与底部展示当前 server 的**版本号与构建时间**（编译期注入，见「版本号与构建信息」）；
 - 界面为扁平简洁风：白底卡片 + 1px 细描边，纯色强调（无渐变、无浮起阴影），
   自适应亮色/暗色主题（跟随系统），并适配手机屏幕。
 
-相关接口：`GET /api/status`（在线节点快照 JSON）、`GET /api/events`（SSE
-事件流：`status` / `clip` / `cleared`）。
+相关接口：`GET /api/status`（在线节点快照 JSON）、`GET /api/version`（版本号、
+commit、构建时间、Go 版本/平台）、`GET /api/events`（SSE 事件流：`status` /
+`clip` / `cleared`）。
 
 ## 代码结构
 
@@ -162,8 +199,10 @@ internal/agent/         client 主逻辑：监听剪切板、收发、自动重�
 internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语义）
   clipboard_windows.go  Win32：CF_UNICODETEXT / CF_DIB（stdlib syscall）
   clipboard_linux.go    Linux：xclip / wl-clipboard
+internal/buildinfo/     版本号/commit/构建时间（-ldflags 注入，日志、-v、Web 共用）
 internal/dib/           纯 Go DIB↔PNG 编解码（Windows 图片用）
 internal/cli/           命令行选项：长写法 + 单字母简写共用一个变量
+internal/logx/          日志出口：保证一条事件只占一行
 internal/protocol/      消息格式（JSON 头 + 二进制负载）
 internal/server/        WS 集线器、广播、SSE 事件、Web API 与内嵌页面
 internal/store/         SQLite 历史存储（清理/分页/内容读取）

@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/micookie2/share-clip/internal/buildinfo"
 )
 
 // broker fans out server-side events (node presence changes, new history
@@ -78,6 +80,14 @@ func (s *Server) publishStatus() {
 // handleStatus returns a one-shot snapshot of the connected nodes.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.currentStatus())
+}
+
+// handleVersion reports the build metadata stamped into this binary at link
+// time; the web UI shows it in the header and footer. It never changes while
+// the process runs, so it is safe to cache.
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, buildinfo.Get())
 }
 
 // handleEvents streams server events to the web UI via Server-Sent Events.

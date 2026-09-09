@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/items/{id}/push", s.handlePush)
 	mux.HandleFunc("POST /api/history/clear", s.handleClear)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
 	// Brand icon: served from the embedded assets package so the favicon and
