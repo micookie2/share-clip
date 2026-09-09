@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/micookie2/share-clip/assets"
+	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
 	"github.com/micookie2/share-clip/internal/store"
 )
@@ -78,7 +78,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	if !cfg.Quiet {
 		s.logf = func(format string, args ...any) {
-			log.Printf("[server] "+format, args...)
+			logx.Printf("[server] "+format, args...)
 		}
 	}
 	return s, nil

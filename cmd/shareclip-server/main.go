@@ -5,12 +5,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/micookie2/share-clip/internal/cli"
+	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
 	"github.com/micookie2/share-clip/internal/server"
 )
@@ -49,15 +49,15 @@ Web 管理页:     http://<host>%s/
 		Quiet:        *quiet,
 	})
 	if err != nil {
-		log.Fatalf("启动失败: %v", err)
+		logx.Fatalf("启动失败: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	log.Printf("share-clip server %s 启动", version)
-	log.Printf("历史数据库: %s（保留最近 %d 条）", *dbPath, *historyLimit)
+	logx.Printf("share-clip server %s 启动", version)
+	logx.Printf("历史数据库: %s（保留最近 %d 条）", *dbPath, *historyLimit)
 	if err := s.ListenAndServe(ctx); err != nil {
-		log.Fatalf("server 退出: %v", err)
+		logx.Fatalf("server 退出: %v", err)
 	}
-	log.Printf("server 已停止")
+	logx.Printf("server 已停止")
 }

@@ -9,13 +9,13 @@ import (
 	"context"
 	"fmt"
 	"image/png"
-	"log"
 	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/micookie2/share-clip/internal/clipboard"
+	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
 )
 
@@ -55,7 +55,7 @@ func Run(ctx context.Context, cfg Config) error {
 	a.watcher = clipboard.NewWatcher(backend, a.onLocalChange,
 		clipboard.WithOnError(func(err error) {
 			if !cfg.Quiet {
-				log.Printf("[client] 读取剪贴板出错: %v", err)
+				logx.Printf("[client] 读取剪贴板出错: %v", err)
 			}
 		}))
 	a.watcher.Start()
@@ -69,9 +69,9 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		if !cfg.Quiet {
 			if err != nil {
-				log.Printf("[client] 连接断开: %v，%.0fs 后重试…", err, backoff.Seconds())
+				logx.Printf("[client] 连接断开: %v，%.0fs 后重试…", err, backoff.Seconds())
 			} else {
-				log.Printf("[client] 连接断开，%.0fs 后重试…", backoff.Seconds())
+				logx.Printf("[client] 连接断开，%.0fs 后重试…", backoff.Seconds())
 			}
 		}
 		select {
@@ -93,7 +93,7 @@ func Run(ctx context.Context, cfg Config) error {
 func (a *Agent) connect(ctx context.Context) error {
 	url := "ws://" + a.cfg.ServerAddr + "/ws"
 	if !a.cfg.Quiet {
-		log.Printf("[client] 正在连接 %s …", url)
+		logx.Printf("[client] 正在连接 %s …", url)
 	}
 	conn, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
@@ -145,7 +145,7 @@ func (a *Agent) readLoop(ctx context.Context, conn *websocket.Conn, errCh chan<-
 		m, err := protocol.Parse(data, a.maxPayload())
 		if err != nil {
 			if !a.cfg.Quiet {
-				log.Printf("[client] 收到损坏的帧: %v", err)
+				logx.Printf("[client] 收到损坏的帧: %v", err)
 			}
 			continue
 		}
@@ -213,7 +213,7 @@ func (a *Agent) onLocalChange(c clipboard.Content) {
 	default:
 		n := a.dropped.Add(1)
 		if !a.cfg.Quiet && (n <= 3 || n%20 == 0) {
-			log.Printf("[client] 剪贴板内容未发送（未连接或发送队列已满，已丢弃 %d 条）", n)
+			logx.Printf("[client] 剪贴板内容未发送（未连接或发送队列已满，已丢弃 %d 条）", n)
 		}
 	}
 }
@@ -224,15 +224,15 @@ func (a *Agent) handleIncoming(m *protocol.Msg) {
 	switch m.Kind {
 	case protocol.KindWelcome:
 		if !a.cfg.Quiet {
-			log.Printf("[client] 已连接 server（当前在线 %d 台）", m.Count)
+			logx.Printf("[client] 已连接 server（当前在线 %d 台）", m.Count)
 		}
 	case protocol.KindJoined:
 		if !a.cfg.Quiet {
-			log.Printf("[client] %s 上线", m.ClientName)
+			logx.Printf("[client] %s 上线", m.ClientName)
 		}
 	case protocol.KindLeft:
 		if !a.cfg.Quiet {
-			log.Printf("[client] %s 下线", m.ClientName)
+			logx.Printf("[client] %s 下线", m.ClientName)
 		}
 	case protocol.KindClip:
 		content, ok := contentFromMessage(m)
@@ -241,7 +241,7 @@ func (a *Agent) handleIncoming(m *protocol.Msg) {
 		}
 		if err := a.watcher.ApplyRemote(content); err != nil {
 			if !a.cfg.Quiet {
-				log.Printf("[client] 写入剪贴板失败: %v", err)
+				logx.Printf("[client] 写入剪贴板失败: %v", err)
 			}
 			return
 		}
@@ -252,10 +252,10 @@ func (a *Agent) handleIncoming(m *protocol.Msg) {
 			}
 			switch content.Kind {
 			case clipboard.KindText:
-				log.Printf("[client] 收到 %s 的文本（%d 字符）：%s",
+				logx.Printf("[client] 收到 %s 的文本（%d 字符）：%s",
 					from, len(content.Text), preview(content.Text, 60))
 			case clipboard.KindImage:
-				log.Printf("[client] 收到 %s 的图片（%d B）", from, len(content.PNG))
+				logx.Printf("[client] 收到 %s 的图片（%d B）", from, len(content.PNG))
 			}
 		}
 	case protocol.KindPing:

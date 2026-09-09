@@ -6,13 +6,13 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/micookie2/share-clip/internal/agent"
 	"github.com/micookie2/share-clip/internal/cli"
+	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
 )
 
@@ -40,7 +40,7 @@ func main() {
 		return
 	}
 	if *serverAddr == "" {
-		log.Fatal("请用 -s 指定 server 地址，例如 shareclip-client -s 192.168.1.10:9000")
+		logx.Fatal("请用 -s 指定 server 地址，例如 shareclip-client -s 192.168.1.10:9000")
 	}
 
 	host, err := os.Hostname()
@@ -64,9 +64,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("share-clip client %s（%s）启动，server: %s", version, displayName, *serverAddr)
+	logx.Printf("share-clip client %s（%s）启动，server: %s", version, displayName, *serverAddr)
 	if err := agent.Run(ctx, cfg); err != nil {
-		log.Fatalf("client 退出: %v", err)
+		logx.Fatalf("client 退出: %v", err)
 	}
 }
 
