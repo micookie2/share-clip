@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/micookie2/share-clip/assets"
 	"github.com/micookie2/share-clip/internal/protocol"
 	"github.com/micookie2/share-clip/internal/store"
 )
@@ -103,12 +104,31 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
+	// Brand icon: served from the embedded assets package so the favicon and
+	// touch icons work even when only the server binary is deployed.
+	mux.HandleFunc("GET /favicon.svg", serveAsset(assets.IconSVG, "image/svg+xml"))
+	mux.HandleFunc("GET /icon.svg", serveAsset(assets.IconSVG, "image/svg+xml"))
+	mux.HandleFunc("GET /favicon.ico", serveAsset(assets.IconICO, "image/x-icon"))
+	mux.HandleFunc("GET /apple-touch-icon.png", serveAsset(assets.AppleTouchIcon, "image/png"))
+	mux.HandleFunc("GET /icon-192.png", serveAsset(assets.Icon192, "image/png"))
+	mux.HandleFunc("GET /icon-512.png", serveAsset(assets.Icon512, "image/png"))
+
 	sub, err := fs.Sub(webuiFS, "webui")
 	if err != nil {
 		panic(err)
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	return mux
+}
+
+// serveAsset returns a handler for a static embedded asset. The icons are
+// immutable per build, so they get a long client-side cache.
+func serveAsset(data []byte, contentType string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(data)
+	}
 }
 
 // ListenAndServe serves until ctx is cancelled, then shuts down gracefully.

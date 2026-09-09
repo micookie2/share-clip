@@ -1,7 +1,7 @@
 GO ?= go
 BIN := bin
 
-.PHONY: all build test vet fmt clean run-server
+.PHONY: all build build-windows test vet fmt icon icon-windows clean run-server
 
 all: build
 
@@ -23,7 +23,19 @@ vet:
 	$(GO) vet ./...
 
 fmt:
-	gofmt -w cmd internal
+	gofmt -w cmd internal assets
+
+# Regenerate the raster icons (PNG + .ico) from assets/icon.svg.
+# Needs: pip install cairosvg pillow
+icon:
+	python3 assets/generate.py
+
+# Refresh the Windows .exe icon resources from assets/icon.ico.
+# Needs: go install github.com/akavel/rsrc@latest
+# The generated .syso files are committed, so a normal build never needs rsrc.
+icon-windows:
+	rsrc -ico assets/icon.ico -arch amd64 -o cmd/shareclip-server/rsrc_windows_amd64.syso
+	rsrc -ico assets/icon.ico -arch amd64 -o cmd/shareclip-client/rsrc_windows_amd64.syso
 
 run-server:
 	$(GO) run ./cmd/shareclip-server

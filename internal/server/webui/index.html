@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>share-clip · 局域网剪贴板</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='4' y='4' width='16' height='17' rx='3' fill='%233370ff'/%3E%3Crect x='8' y='2' width='8' height='5' rx='2' fill='%23ffffff'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="alternate icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#3370ff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17181a" media="(prefers-color-scheme: dark)">
 <style>
 :root {
   --fg: #1d2129;
@@ -191,6 +196,7 @@ pre.full.show { display: block; }
 
 .empty { text-align: center; color: var(--muted); padding: 76px 20px; }
 .empty svg { color: var(--line-strong); margin-bottom: 14px; }
+.empty svg.brandmark { color: var(--accent); opacity: .3; }
 .empty h2 { font-size: 15px; margin: 0 0 6px; color: var(--fg); font-weight: 600; }
 .empty p { margin: 0; font-size: 13px; }
 
@@ -235,14 +241,38 @@ pre.full.show { display: block; }
 </style>
 </head>
 <body>
+<!-- Brand glyph (share-clip icon) defined once, reused by the header and the
+     empty state; currentColor lets each caller pick its own tint. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="brand-icon" viewBox="307 261 703 703">
+    <g fill="none" stroke="currentColor" stroke-width="33">
+      <path stroke-linecap="butt" d="M 483 410.5 L 467.5 410.5 A 45 45 0 0 0 422.5 455.5 L 422.5 824.5 A 49 49 0 0 0 471.5 873.5 L 671.5 873.5"/>
+      <path stroke-linecap="butt" d="M 770 410.5 L 800.5 410.5 A 45 45 0 0 1 831.5 455.5 L 831.5 611.5"/>
+      <path stroke-linecap="round" d="M 671.5 873.5 h 0.01"/>
+      <path stroke-linecap="round" d="M 831.5 611.5 h 0.01"/>
+    </g>
+    <path fill="currentColor" fill-rule="evenodd" d="M 565.5 356 A 62.5 62.5 0 0 1 688.5 356 L 735 356 A 22 22 0 0 1 757 378 L 757 425 A 22 22 0 0 1 735 447 L 520 447 A 22 22 0 0 1 498 425 L 498 378 A 22 22 0 0 1 520 356 Z M 627 344 A 23.5 23.5 0 1 0 627 391 A 23.5 23.5 0 1 0 627 344 Z"/>
+    <g fill="currentColor" opacity=".5">
+      <rect x="493" y="521" width="267" height="34" rx="17"/>
+      <rect x="492" y="600" width="219" height="34" rx="17"/>
+      <rect x="491" y="677" width="165" height="34" rx="17"/>
+    </g>
+    <g stroke="currentColor" stroke-width="27">
+      <line x1="716" y1="784" x2="862" y2="694"/>
+      <line x1="716" y1="784" x2="862" y2="872"/>
+    </g>
+    <g fill="currentColor">
+      <circle cx="716" cy="784" r="46"/>
+      <circle cx="862" cy="694" r="49"/>
+      <circle cx="862" cy="872" r="49"/>
+    </g>
+  </symbol>
+</svg>
 <header>
   <div class="bar">
     <div class="brand">
       <div class="logo">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-          <path d="M9 12h6M9 16h4"/>
-        </svg>
+        <svg width="22" height="22" aria-hidden="true"><use href="#brand-icon"/></svg>
       </div>
       <div>
         <h1>share-clip</h1>
@@ -356,10 +386,7 @@ function emptyState() {
   const d = document.createElement("div");
   d.className = "empty";
   d.innerHTML =
-    '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
-      '<rect x="8" y="2" width="8" height="4" rx="1"/>' +
-      '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>' +
-      '<path d="M9 12h6M9 16h4"/></svg>' +
+    '<svg class="brandmark" width="54" height="54" aria-hidden="true"><use href="#brand-icon"/></svg>' +
     "<h2>暂无历史记录</h2>" +
     "<p>在任意一台客户端上复制文本或图片，这里会实时自动出现。</p>";
   return d;

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.svg" width="96" height="96" alt="share-clip icon">
+</p>
+
 # share-clip — LAN clipboard sharing
 
 [![CI](https://github.com/micookie2/share-clip/actions/workflows/ci.yml/badge.svg)](https://github.com/micookie2/share-clip/actions/workflows/ci.yml)
@@ -164,6 +168,8 @@ APIs: `GET /api/status` (online node snapshot), `GET /api/events` (SSE stream of
 ## Layout
 
 ```
+assets/                 brand icon (icon.svg is the source; PNG/ICO and the
+                        Windows .syso resources are generated from it)
 cmd/shareclip-server/   server entry point
 cmd/shareclip-client/   client entry point
 internal/agent/         client logic: clipboard watch, send/receive, reconnect

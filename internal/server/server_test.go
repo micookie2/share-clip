@@ -333,3 +333,40 @@ func TestHistoryClearAnd404(t *testing.T) {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
+
+// The web UI advertises these icon URLs; they must stay reachable and keep
+// their content type even though they are served outside the embedded webui.
+func TestIconAssets(t *testing.T) {
+	s := startServer(t)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	defer s.Close()
+
+	cases := []struct {
+		path, ctype, marker string
+	}{
+		{"/favicon.svg", "image/svg+xml", "<svg"},
+		{"/icon.svg", "image/svg+xml", "<svg"},
+		{"/favicon.ico", "image/x-icon", "\x00\x00\x01\x00"},
+		{"/apple-touch-icon.png", "image/png", "\x89PNG"},
+		{"/icon-192.png", "image/png", "\x89PNG"},
+		{"/icon-512.png", "image/png", "\x89PNG"},
+	}
+	for _, c := range cases {
+		resp, err := http.Get(ts.URL + c.path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", c.path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status %d", c.path, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Content-Type"); got != c.ctype {
+			t.Fatalf("GET %s: content type %q, want %q", c.path, got, c.ctype)
+		}
+		if !bytes.HasPrefix(body, []byte(c.marker)) {
+			t.Fatalf("GET %s: body does not start with %q", c.path, c.marker)
+		}
+	}
+}

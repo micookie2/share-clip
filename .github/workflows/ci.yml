@@ -18,7 +18,7 @@ jobs:
           go-version-file: go.mod
       - name: 格式检查
         run: |
-          unformatted="$(gofmt -l cmd internal)"
+          unformatted="$(gofmt -l cmd internal assets)"
           if [ -n "$unformatted" ]; then
             echo "以下文件未通过 gofmt："
             echo "$unformatted"

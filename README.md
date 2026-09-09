@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.svg" width="96" height="96" alt="share-clip 图标">
+</p>
+
 # share-clip —— 局域网剪贴板共享
 
 [![CI](https://github.com/micookie2/share-clip/actions/workflows/ci.yml/badge.svg)](https://github.com/micookie2/share-clip/actions/workflows/ci.yml)
@@ -151,6 +155,7 @@ Go 1.25.6 (linux/amd64 与 windows/amd64) 下验证通过。
 ## 代码结构
 
 ```
+assets/                 品牌图标（icon.svg 为源，PNG/ICO 与 Windows .syso 由它生成）
 cmd/shareclip-server/   server 入口
 cmd/shareclip-client/   client 入口
 internal/agent/         client 主逻辑：监听剪切板、收发、自动重连

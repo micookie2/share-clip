@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="307 261 703 703" width="128" height="128" role="img" aria-label="share-clip">
+  <title>share-clip</title>
+  <defs>
+    <linearGradient id="scBlue" gradientUnits="userSpaceOnUse" x1="628" y1="300" x2="628" y2="925">
+      <stop offset="0" stop-color="#55A6FE"/>
+      <stop offset="1" stop-color="#4694FC"/>
+    </linearGradient>
+  </defs>
+
+  <!-- clipboard outline (open at top for the clip, cut at bottom-right for the share badge) -->
+  <g fill="none" stroke="url(#scBlue)" stroke-width="33">
+    <path stroke-linecap="butt" d="M 483 410.5 L 467.5 410.5 A 45 45 0 0 0 422.5 455.5 L 422.5 824.5 A 49 49 0 0 0 471.5 873.5 L 671.5 873.5"/>
+    <path stroke-linecap="butt" d="M 770 410.5 L 800.5 410.5 A 45 45 0 0 1 831.5 455.5 L 831.5 611.5"/>
+    <!-- round end caps -->
+    <path stroke-linecap="round" d="M 671.5 873.5 h 0.01"/>
+    <path stroke-linecap="round" d="M 831.5 611.5 h 0.01"/>
+  </g>
+
+  <!-- clip on top (tab + body, with hole punched via evenodd) -->
+  <path fill="url(#scBlue)" fill-rule="evenodd" d="M 565.5 356
+    A 62.5 62.5 0 0 1 688.5 356
+    L 735 356
+    A 22 22 0 0 1 757 378
+    L 757 425
+    A 22 22 0 0 1 735 447
+    L 520 447
+    A 22 22 0 0 1 498 425
+    L 498 378
+    A 22 22 0 0 1 520 356
+    Z
+    M 627 344
+    A 23.5 23.5 0 1 0 627 391
+    A 23.5 23.5 0 1 0 627 344
+    Z"/>
+
+  <!-- text lines -->
+  <g fill="#AFCEFE">
+    <rect x="493" y="521" width="267" height="34" rx="17"/>
+    <rect x="492" y="600" width="219" height="34" rx="17"/>
+    <rect x="491" y="677" width="165" height="34" rx="17"/>
+  </g>
+
+  <!-- share badge -->
+  <g stroke="url(#scBlue)" stroke-width="27">
+    <line x1="716" y1="784" x2="862" y2="694"/>
+    <line x1="716" y1="784" x2="862" y2="872"/>
+  </g>
+  <g fill="url(#scBlue)">
+    <circle cx="716" cy="784" r="46"/>
+    <circle cx="862" cy="694" r="49"/>
+    <circle cx="862" cy="872" r="49"/>
+  </g>
+</svg>
