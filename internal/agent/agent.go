@@ -28,6 +28,13 @@ type Config struct {
 	PollIntervalMs int    // clipboard poll interval used by Linux
 	MaxPayload     int    // maximum clipboard payload accepted
 	Quiet          bool
+
+	// OnConnected 在连上 server 并发出 hello 之后调用，addr 为 server 地址。
+	// 桌面模式用它点亮界面/托盘上的连接状态；为 nil 时不做任何事。
+	OnConnected func(addr string)
+	// OnDisconnected 在连接断开或连接失败时调用，retryIn 是下一次重连前的
+	// 等待时间。err 为 nil 表示对端正常关闭。
+	OnDisconnected func(err error, retryIn time.Duration)
 }
 
 const (
@@ -74,6 +81,33 @@ func (a *Agent) logf(format string, args ...any) {
 		return
 	}
 	logx.Printf(format, args...)
+}
+
+// notifyConnected 通知外部「已连上」。回调里的 panic 只记一条日志：状态展示
+// 出问题不该把剪贴板同步一起带走。
+func (a *Agent) notifyConnected() {
+	if a.cfg.OnConnected == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			a.logf("[client] OnConnected 回调 panic: %v", r)
+		}
+	}()
+	a.cfg.OnConnected(a.cfg.ServerAddr)
+}
+
+// notifyDisconnected 通知外部「连接断了/没连上，retryIn 秒后重试」。
+func (a *Agent) notifyDisconnected(err error, retryIn time.Duration) {
+	if a.cfg.OnDisconnected == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			a.logf("[client] OnDisconnected 回调 panic: %v", r)
+		}
+	}()
+	a.cfg.OnDisconnected(err, retryIn)
 }
 
 // Run blocks until ctx is cancelled. Clipboard events observed while the
@@ -123,6 +157,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if stable {
 			backoff = time.Second
 		}
+		a.notifyDisconnected(err, backoff)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -157,6 +192,7 @@ func (a *Agent) connect(ctx context.Context) error {
 		conn.CloseNow()
 		return fmt.Errorf("hello: %w", err)
 	}
+	a.notifyConnected()
 
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

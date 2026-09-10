@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -61,4 +62,33 @@ func TestIsOwnEcho(t *testing.T) {
 	if b.isOwnEcho(rich) {
 		t.Error("expired send treated as echo")
 	}
+}
+
+func TestStatusHooks(t *testing.T) {
+	var (
+		addr    string
+		gotErr  error
+		retryIn time.Duration
+	)
+	a := &Agent{cfg: Config{
+		ServerAddr:     "10.0.0.1:9000",
+		Quiet:          true,
+		OnConnected:    func(s string) { addr = s },
+		OnDisconnected: func(err error, r time.Duration) { gotErr, retryIn = err, r },
+	}}
+	a.notifyConnected()
+	if addr != "10.0.0.1:9000" {
+		t.Errorf("OnConnected 收到 %q", addr)
+	}
+	a.notifyDisconnected(errors.New("boom"), 4*time.Second)
+	if gotErr == nil || gotErr.Error() != "boom" || retryIn != 4*time.Second {
+		t.Errorf("OnDisconnected 收到 err=%v retryIn=%v", gotErr, retryIn)
+	}
+
+	// 未注册回调时不能 panic，断了连接也不能把状态展示的 panic 传出去。
+	(&Agent{}).notifyConnected()
+	(&Agent{}).notifyDisconnected(errors.New("x"), time.Second)
+	(&Agent{cfg: Config{Quiet: true, OnConnected: func(string) { panic("ui bug") }}}).notifyConnected()
+	(&Agent{cfg: Config{Quiet: true, OnDisconnected: func(error, time.Duration) { panic("ui bug") }}}).
+		notifyDisconnected(errors.New("x"), time.Second)
 }

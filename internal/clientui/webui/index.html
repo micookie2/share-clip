@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>share-clip 客户端</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="alternate icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#3370ff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17181a" media="(prefers-color-scheme: dark)">
+<style>
+:root {
+  --fg: #1d2129;
+  --muted: #86909c;
+  --faint: #a9b0bb;
+  --line: #e5e6eb;
+  --line-strong: #d5d8de;
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #f7f8fa;
+  --accent: #3370ff;
+  --accent-hover: #245bdb;
+  --accent-soft: #eaf0ff;
+  --ok: #00a870;
+  --warn: #d97706;
+  --danger: #d93a3a;
+  --chip: #f2f3f5;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow-pop: 0 4px 16px rgba(29, 33, 41, .10);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e7e9ec;
+    --muted: #8b929c;
+    --faint: #6b7280;
+    --line: #2f3339;
+    --line-strong: #41464d;
+    --bg: #17181a;
+    --surface: #202124;
+    --surface-2: #26282c;
+    --accent: #5b8cff;
+    --accent-hover: #7ba3ff;
+    --accent-soft: #1e2a44;
+    --ok: #23c07f;
+    --warn: #e0952a;
+    --danger: #ef6060;
+    --chip: #2a2d31;
+    --shadow-pop: 0 4px 16px rgba(0, 0, 0, .40);
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  font-family: "Inter", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  margin: 0; color: var(--fg); font-size: 14px; background: var(--bg);
+  min-height: 100vh; -webkit-font-smoothing: antialiased;
+}
+.num { font-variant-numeric: tabular-nums; }
+.grow { margin-left: auto; }
+
+header {
+  position: sticky; top: 0; z-index: 50; background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.bar {
+  max-width: 860px; margin: 0 auto; padding: 11px 16px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 10px; margin-right: auto; min-width: 0; }
+.logo {
+  width: 30px; height: 30px; border-radius: 7px; background: var(--accent);
+  display: grid; place-items: center; flex: none;
+}
+.logo img { width: 20px; height: 20px; display: block; filter: brightness(0) invert(1); }
+.brand h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.brand small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; margin-top: 1px; }
+
+.statuspill {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 6px 11px; font-size: 13px; background: var(--surface); max-width: 100%;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.on { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.err { background: var(--danger); }
+.statuspill .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+main { max-width: 860px; margin: 0 auto; padding: 16px; display: grid; gap: 14px; }
+.card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px;
+}
+.card > h2 {
+  font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--muted);
+  text-transform: none; letter-spacing: .2px;
+}
+
+.statehead { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.statehead .big { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 600; }
+.statehead .detail { color: var(--muted); font-size: 13px; margin-top: 6px; word-break: break-all; }
+.statehead .spacer { margin-left: auto; }
+
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; margin-top: 14px; }
+.meta .item { min-width: 0; }
+.meta .k { color: var(--muted); font-size: 12px; margin-bottom: 2px; }
+.meta .v { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta .v.mono { font-family: var(--mono); font-size: 12.5px; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.btn {
+  font: inherit; font-size: 13px; border-radius: var(--radius-sm); cursor: pointer;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg);
+  padding: 7px 13px; transition: background .15s, border-color .15s, color .15s;
+  display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+}
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.danger:hover { color: var(--danger); border-color: var(--danger); }
+.btn:disabled { opacity: .55; cursor: default; }
+
+form { display: grid; gap: 12px; }
+.field { display: grid; gap: 5px; }
+.field label { font-size: 12.5px; color: var(--muted); }
+.field input {
+  font: inherit; font-size: 13.5px; padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--fg);
+  width: 100%; font-family: var(--mono);
+}
+.field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.field .hint { font-size: 12px; color: var(--faint); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 620px) { .grid2 { grid-template-columns: 1fr; } }
+details.adv { border-top: 1px solid var(--line); padding-top: 10px; }
+details.adv summary { cursor: pointer; color: var(--muted); font-size: 12.5px; user-select: none; }
+details.adv[open] summary { margin-bottom: 12px; }
+
+.logtool { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.logtool .grow { margin-left: auto; }
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.logpanel {
+  font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 8px 10px; height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+.logpanel .line { display: flex; gap: 8px; }
+.logpanel .line .t { color: var(--faint); flex: none; }
+.logpanel .line .m { min-width: 0; }
+.logpanel .line.recv .m { color: var(--muted); }
+.logpanel .line.err .m { color: var(--danger); }
+.logpanel .empty { color: var(--faint); }
+
+footer { max-width: 860px; margin: 0 auto; padding: 4px 16px 28px; color: var(--muted); font-size: 12px; }
+footer .row { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; padding: 3px 0; }
+footer .mono { font-family: var(--mono); word-break: break-all; }
+footer .sep { color: var(--line-strong); }
+
+#toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 100; max-width: min(420px, 90vw); }
+.toast {
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-pop); padding: 10px 12px; font-size: 13px;
+  animation: in .16s ease-out;
+}
+.toast.err { border-left-color: var(--danger); }
+.toast.ok { border-left-color: var(--ok); }
+@keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <span class="logo"><img src="/favicon.svg" alt=""></span>
+      <div>
+        <h1>share-clip 客户端</h1>
+        <small id="subtitle">本机剪贴板共享</small>
+      </div>
+    </div>
+    <span class="statuspill" id="pill"><span class="dot" id="pilldot"></span><span class="txt" id="pilltext">加载中…</span></span>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>连接状态</h2>
+    <div class="statehead">
+      <div style="min-width:0">
+        <div class="big"><span class="dot" id="statedot"></span><span id="phasetext">—</span></div>
+        <div class="detail" id="detail"></div>
+      </div>
+      <div class="spacer"></div>
+    </div>
+    <div class="meta">
+      <div class="item"><div class="k">服务器</div><div class="v mono" id="mserver">—</div></div>
+      <div class="item"><div class="k">本机显示名</div><div class="v" id="mname">—</div></div>
+      <div class="item"><div class="k">状态起始</div><div class="v num" id="msince">—</div></div>
+      <div class="item"><div class="k">下次重连</div><div class="v num" id="mretry">—</div></div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="btnPause">暂停同步</button>
+      <button class="btn" id="btnReconnect">立即重连</button>
+      <a class="btn" id="linkServer" href="#" target="_blank" rel="noopener" hidden>打开服务器管理页 ↗</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>设置</h2>
+    <form id="form">
+      <div class="field">
+        <label for="server">服务器地址</label>
+        <input id="server" name="server" type="text" placeholder="192.168.1.10:9000" autocomplete="off" spellcheck="false" required>
+        <div class="hint">host:port，可省略端口（默认 9000）；带 ws:// 或 http:// 前缀也能识别。</div>
+      </div>
+      <div class="field">
+        <label for="name">本机显示名</label>
+        <input id="name" name="name" type="text" placeholder="" autocomplete="off" spellcheck="false">
+        <div class="hint" id="namehint">留空则使用主机名。</div>
+      </div>
+      <details class="adv">
+        <summary>高级设置</summary>
+        <div class="grid2">
+          <div class="field">
+            <label for="pollMs">剪贴板轮询间隔（毫秒）</label>
+            <input id="pollMs" name="pollMs" type="number" min="50" step="50">
+            <div class="hint">仅 Linux 需要；X11 有复制事件时基本用不到。</div>
+          </div>
+          <div class="field">
+            <label for="maxPayload">单条内容上限（字节）</label>
+            <input id="maxPayload" name="maxPayload" type="number" min="1024" step="1024">
+            <div class="hint">默认 33554432（32 MiB），超过上限的复制会被忽略。</div>
+          </div>
+        </div>
+      </details>
+      <div class="actions">
+        <button class="btn primary" type="submit" id="btnSave">保存并重连</button>
+        <button class="btn" type="button" id="btnRevert">放弃修改</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>日志</h2>
+    <div class="logtool">
+      <label class="switch"><input type="checkbox" id="autoscroll" checked>自动滚动</label>
+      <span class="switch" id="logcount"></span>
+      <span class="grow"></span>
+      <button class="btn" id="btnClear">清空日志</button>
+    </div>
+    <div class="logpanel" id="logpanel"><div class="empty">等待日志…</div></div>
+  </section>
+</main>
+
+<footer>
+  <div class="row"><span id="fversion">—</span></div>
+  <div class="row">
+    <span>托盘：<span id="ftray">—</span></span>
+    <span class="sep">·</span>
+    <span>日志文件：<span class="mono" id="flog">—</span></span>
+  </div>
+  <div class="row">
+    <span class="mono" id="fconfig">—</span>
+    <span class="grow"></span>
+    <button class="btn danger" id="btnQuit">退出客户端</button>
+  </div>
+</footer>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const MAX_LINES = 1000;          // DOM 里最多保留的日志行数，防止长时间运行后页面变卡
+let state = null;                // 最近一次 /api/state 或 SSE status 快照
+let lastSeq = 0;                 // 已渲染的最大日志序号，用于增量补齐
+let seen = new Set();            // 已渲染的日志序号，避免 SSE 与补齐重复
+let countdownTimer = null;
+let paused = false;              // 最近一次已知的暂停状态（按钮文案用）
+
+const PHASE = {
+  idle:       { text: "未运行",   cls: "" },
+  connecting: { text: "连接中",   cls: "warn" },
+  connected:  { text: "已连接",   cls: "on" },
+  retrying:   { text: "重连中",   cls: "err" },
+  error:      { text: "本地环境问题", cls: "err" },
+};
+
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return "—";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function fmtClock(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "--:--:--";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), kind === "err" ? 7000 : 3500);
+}
+
+/* 配置表单只在用户没有手动改动时才跟随服务端状态刷新，否则打字打到一半
+   就会被 SSE 推来的状态覆盖。 */
+let formDirty = false;
+$("form").addEventListener("input", () => { formDirty = true; });
+
+function fillForm(cfg, hostname) {
+  if (formDirty) return;
+  $("server").value = cfg.server || "";
+  $("name").value = cfg.name || "";
+  $("namehint").textContent = `留空则使用主机名（${hostname || "unknown"}）。`;
+  $("pollMs").value = cfg.pollMs || 1000;
+  $("maxPayload").value = cfg.maxPayload || 33554432;
+}
+function resetForm() {
+  formDirty = false;
+  if (state) fillForm(state.config, state.hostname);
+}
+
+function render(st) {
+  state = st;
+  const s = st.status || {};
+  const ph = PHASE[s.phase] || PHASE.idle;
+  paused = !!s.paused;
+
+  // 顶部指示灯
+  $("pilldot").className = "dot " + (ph.cls || "");
+  $("pilltext").textContent = `${ph.text}${s.server ? " · " + s.server : ""}`;
+  document.title = `${ph.text} · share-clip 客户端`;
+
+  // 状态卡片
+  $("statedot").className = "dot " + (ph.cls || "");
+  let phaseText = ph.text;
+  if (s.paused) phaseText = "已暂停同步";
+  $("phasetext").textContent = phaseText;
+  $("detail").textContent = s.detail || "";
+  $("mserver").textContent = s.server || "（未配置）";
+  $("mname").textContent = s.name || "—";
+  $("msince").textContent = fmtTime(s.since);
+  $("mretry").textContent = s.retryInMs > 0 ? `${(s.retryInMs / 1000).toFixed(0)} 秒` : "—";
+
+  // 暂停/恢复按钮
+  $("btnPause").textContent = s.paused ? "恢复同步" : "暂停同步";
+  $("btnPause").disabled = !s.server;
+  $("btnReconnect").disabled = !s.server || s.paused;
+
+  // 服务器管理页链接
+  const link = $("linkServer");
+  if (st.serverWebURL) { link.href = st.serverWebURL; link.hidden = false; }
+  else { link.hidden = true; }
+
+  fillForm(st.config, st.hostname);
+
+  // 页脚
+  const i = st.info || {};
+  $("subtitle").textContent = `v${i.version || "?"} · ${st.hostname || ""}`;
+  $("fversion").textContent =
+    `v${i.version || "?"}（commit ${i.commit || "unknown"}，构建于 ${fmtTime(i.buildTime)}，${i.goVersion || ""} ${i.platform || ""}）`;
+  $("ftray").textContent = st.trayEnabled ? "已启用（可右键托盘图标）" : "不可用（使用本页面即可）";
+  $("flog").textContent = st.logFile || "—";
+  $("fconfig").textContent = st.configPath ? `配置文件：${st.configPath}` : "";
+
+  startCountdown(s.retryInMs);
+}
+
+/* 重连倒计时：只在前端逐秒递减，不必让服务端每秒推一次状态。 */
+function startCountdown(ms) {
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  if (!ms || ms <= 0) { $("mretry").textContent = "—"; return; }
+  let left = Math.round(ms / 1000);
+  $("mretry").textContent = left + " 秒";
+  countdownTimer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) { clearInterval(countdownTimer); countdownTimer = null; $("mretry").textContent = "正在重试…"; return; }
+    $("mretry").textContent = left + " 秒";
+  }, 1000);
+}
+
+function addLog(entry) {
+  if (!entry || seen.has(entry.seq)) return;
+  seen.add(entry.seq);
+  if (seen.size > 4000) seen = new Set([...seen].slice(-2000));
+  if (entry.seq > lastSeq) lastSeq = entry.seq;
+
+  const panel = $("logpanel");
+  const empty = panel.querySelector(".empty");
+  if (empty) empty.remove();
+
+  const line = document.createElement("div");
+  line.className = "line";
+  const t = String(entry.text || "");
+  if (t.startsWith("[recv]")) line.classList.add("recv");
+  if (/(错误|失败|无法|panic|error|Error|failed)/.test(t)) line.classList.add("err");
+
+  const ts = document.createElement("span");
+  ts.className = "t"; ts.textContent = fmtClock(entry.at);
+  const msg = document.createElement("span");
+  msg.className = "m"; msg.textContent = t;
+  line.append(ts, msg);
+  panel.appendChild(line);
+
+  while (panel.childElementCount > MAX_LINES) panel.removeChild(panel.firstElementChild);
+  $("logcount").textContent = `共 ${panel.childElementCount} 行`;
+  if ($("autoscroll").checked) panel.scrollTop = panel.scrollHeight;
+}
+
+function clearLogs() {
+  $("logpanel").innerHTML = '<div class="empty">等待日志…</div>';
+  $("logcount").textContent = "";
+  seen = new Set(); lastSeq = 0;
+}
+
+/* 先用 SSE 建立实时通道，再补齐历史：中间即使有日志到达，也会按 seq 去重。 */
+function connectEvents() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("status", (ev) => { try { render(JSON.parse(ev.data)); } catch (e) { console.warn(e); } });
+  es.addEventListener("log", (ev) => { try { addLog(JSON.parse(ev.data)); } catch (e) { console.warn(e); } });
+  es.addEventListener("cleared", () => clearLogs());
+  es.onopen = () => backfill();
+  es.onerror = () => { $("pilltext").textContent = "界面已断开，正在重连…"; };
+  return es;
+}
+
+async function backfill() {
+  try {
+    const r = await fetch(`/api/logs?after=${lastSeq}&limit=500`, { cache: "no-store" });
+    if (!r.ok) return;
+    const data = await r.json();
+    // after=0 时服务端回的是「最近一批」，首屏因此不必再单独处理。
+    (data.entries || []).forEach(addLog);
+  } catch (e) { /* 界面自己会重连，这里不打扰用户 */ }
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "share-clip" },
+    body: JSON.stringify(body || {}),
+  });
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* 保持空对象 */ }
+  if (data.state) render(data.state);
+  if (!r.ok) throw new Error(data.error || `请求失败（HTTP ${r.status}）`);
+  return data;
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("btnSave");
+  btn.disabled = true;
+  try {
+    await post("/api/config", {
+      server: $("server").value,
+      name: $("name").value,
+      pollMs: parseInt($("pollMs").value, 10) || 0,
+      maxPayload: parseInt($("maxPayload").value, 10) || 0,
+    });
+    formDirty = false;
+    toast("设置已保存，正在按新配置连接", "ok");
+  } catch (err) {
+    toast(err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+$("btnRevert").addEventListener("click", () => { resetForm(); toast("已恢复为当前生效的设置"); });
+
+$("btnPause").addEventListener("click", async () => {
+  try {
+    await post("/api/pause", { paused: !paused });
+    toast(paused ? "已暂停同步（不再收发剪贴板内容）" : "已恢复同步", "ok");
+  } catch (err) { toast(err.message, "err"); }
+});
+$("btnReconnect").addEventListener("click", async () => {
+  try { await post("/api/reconnect"); toast("正在重新连接"); }
+  catch (err) { toast(err.message, "err"); }
+});
+$("btnClear").addEventListener("click", async () => {
+  try { await post("/api/logs/clear"); clearLogs(); }
+  catch (err) { toast(err.message, "err"); }
+});
+$("btnQuit").addEventListener("click", async () => {
+  if (!confirm("退出后本机剪贴板将不再共享，确定退出吗？")) return;
+  try { await post("/api/quit"); toast("客户端已退出，可以关闭本页"); }
+  catch (err) { toast(err.message, "err"); }
+});
+
+(async function init() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    render(await r.json());
+  } catch (e) {
+    toast("无法读取客户端状态：" + e.message, "err");
+  }
+  await backfill();
+  connectEvents();
+})();
+</script>
+</body>
+</html>

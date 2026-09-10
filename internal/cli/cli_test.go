@@ -114,3 +114,33 @@ func TestUsageMergesNames(t *testing.T) {
 		t.Errorf("默认 false 的开关不该在帮助里提示默认值:\n%s", out)
 	}
 }
+
+func TestChangedReportsExplicitFlagsOnly(t *testing.T) {
+	c := New("demo")
+	server := c.String("s", "server", "", "server 地址")
+	poll := c.Int("p", "poll", 1000, "轮询间隔")
+	quiet := c.Bool("q", "quiet", false, "减少日志")
+	c.ParseArgs([]string{"-s", "1.2.3.4:9000", "-q"})
+
+	// 简写与长写法都算「出现过」——客户端正是靠它区分「双击运行」和「脚本传了 -s」。
+	if !c.Changed("s", "server") {
+		t.Error("给了 -s 却没报告 server 已设置")
+	}
+	if !c.Changed("q", "quiet") {
+		t.Error("给了 -q 却没报告 quiet 已设置")
+	}
+	if c.Changed("p", "poll") {
+		t.Error("没给 -p 却报告 poll 已设置")
+	}
+	if *poll != 1000 || *server != "1.2.3.4:9000" || !*quiet {
+		t.Errorf("解析结果不对: server=%q poll=%d quiet=%v", *server, *poll, *quiet)
+	}
+
+	// 空参数列表：什么都没出现。
+	empty := New("demo")
+	empty.String("s", "server", "", "server 地址")
+	empty.ParseArgs(nil)
+	if empty.Changed("s", "server") {
+		t.Error("没有参数时 Changed 应为 false")
+	}
+}

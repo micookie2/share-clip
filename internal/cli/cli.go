@@ -92,6 +92,21 @@ func (c *Cmd) Parse() []string {
 	return c.ParseArgs(os.Args[1:])
 }
 
+// Changed 报告给定名字（简写或长写法都算）中是否有任意一个在命令行上出现过。
+//
+// 需要区分「用户显式写了 -s」和「-s 取了默认值」的场景（例如客户端据此决定
+// 进控制台模式还是桌面模式）时用它，而不是拿取值和默认值比较。
+func (c *Cmd) Changed(names ...string) bool {
+	set := map[string]bool{}
+	c.fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	for _, n := range names {
+		if set[n] {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseArgs 解析给定的参数列表，便于测试与自行控制入参。
 func (c *Cmd) ParseArgs(args []string) []string {
 	_ = c.fs.Parse(args)
