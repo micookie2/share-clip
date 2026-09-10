@@ -299,7 +299,7 @@ func TestWatcherUserChangeAfterApplyNotSwallowedOrDoubled(t *testing.T) {
 	if err := w.ApplyRemote(Content{Kind: KindText, Text: "remote"}); err != nil {
 		t.Fatalf("ApplyRemote: %v", err)
 	}
-	if w.suppressed == nil {
+	if !suppressionArmed(w) {
 		t.Fatal("ApplyRemote did not arm echo suppression")
 	}
 	// Let the watcher observe (and suppress) our own write first. Without this
@@ -307,7 +307,7 @@ func TestWatcherUserChangeAfterApplyNotSwallowedOrDoubled(t *testing.T) {
 	// remote write and the user copy below into one or two wakeups at random,
 	// which models two genuine copies of the same content and legitimately
 	// reports twice — a nondeterministic test, not a real bug.
-	waitFor(t, 2*time.Second, func() bool { return w.suppressed == nil })
+	waitFor(t, 2*time.Second, func() bool { return !suppressionArmed(w) })
 
 	// A genuine user copy right after the remote apply must be shared exactly
 	// once: the stale suppression must not swallow it, and there is only one
@@ -424,4 +424,14 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 	if !cond() {
 		t.Fatalf("condition not met within %v", d)
 	}
+}
+
+// suppressionArmed 在锁下读取「是否已装好回声抑制」。
+//
+// 直接读 w.suppressed 是不行的：watcher goroutine 会在 poll() 里改这个字段，
+// 测试里的等待循环必须用同一把锁读，否则 -race 会报数据竞争。
+func suppressionArmed(w *Watcher) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.suppressed != nil
 }
