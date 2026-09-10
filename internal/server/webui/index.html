@@ -466,7 +466,7 @@ function renderItem(it) {
   meta.className = "meta";
   meta.innerHTML =
     '<span class="badge ' + it.kind + '"><span class="sq"></span>' +
-      (it.kind === "image" ? "图片" : "文本") + "</span>" +
+      (it.kind === "image" ? "图片" : (it.mime === "text/html" ? "富文本" : "文本")) + "</span>" +
     '<span class="m">' + ICON.monitor + '<span class="src">' + esc(it.sourceName || it.sourceId) + "</span></span>" +
     '<span class="m">' + ICON.clock + '<span class="num" title="' + esc(it.time) + '">' + fmtTime(it.time) + "</span></span>" +
     '<span class="m num">' + ICON.size + fmtSize(it.size) + "</span>";

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/image/bmp"
@@ -89,6 +90,19 @@ func (t *tool) writeArgs(image bool) []string {
 	return nil
 }
 
+// writeTargetArgs returns the arguments that write stdin under an explicit
+// target MIME type (used for rich text/html, which has no default-target
+// shorthand).
+func (t *tool) writeTargetArgs(mime string) []string {
+	switch t.mode {
+	case modeXclip:
+		return []string{"-selection", "clipboard", "-t", mime, "-i"}
+	case modeWl:
+		return []string{"--type", mime}
+	}
+	return nil
+}
+
 // linuxBackend reads/writes the clipboard by delegating to xclip (X11) or
 // wl-clipboard (Wayland). On X11 the backend additionally subscribes to
 // XFixes selection-owner notifications, so WaitForEvent wakes up at the moment
@@ -100,6 +114,9 @@ type linuxBackend struct {
 
 	events      *xfixesEvents // X11 XFixes event source; nil while unavailable
 	eventsTried bool          // only attempt to open the X connection once
+
+	ownerMu sync.Mutex // guards owner
+	owner   *x11Owner  // X11 selection owner serving rich text; nil otherwise
 }
 
 // NewBackend selects xclip or wl-clipboard based on the current session.
@@ -326,12 +343,50 @@ func (b *linuxBackend) Write(c Content) error {
 	case KindEmpty:
 		return nil
 	case KindText:
+		if c.HTML != "" {
+			return b.writeRichText(c.Text, c.HTML)
+		}
 		return b.writeText(c.Text)
 	case KindImage:
 		return b.writeImage(c.PNG)
 	default:
 		return errors.New("clipboard: unknown content kind")
 	}
+}
+
+// writeRichText puts both the plain-text and HTML renditions on the clipboard.
+// On X11 this runs a native selection owner so both targets are served from
+// one clipboard; on Wayland the wl-copy tool can only own a single MIME type,
+// so the HTML rendition is preferred (plain-text-only paste targets get
+// nothing). When the native X11 owner cannot be started, it falls back to
+// writing plain text so paste still works.
+func (b *linuxBackend) writeRichText(text, html string) error {
+	switch b.tool.mode {
+	case modeXclip:
+		owner, err := newX11Owner(text, html)
+		if err != nil {
+			warnf("clipboard: 原生 X11 富文本写入不可用（%v），本次降级为纯文本，HTML 将丢失", err)
+			return b.writeText(text)
+		}
+		b.ownerMu.Lock()
+		old := b.owner
+		b.owner = owner
+		b.ownerMu.Unlock()
+		if old != nil {
+			old.close()
+		}
+		return nil
+	case modeWl:
+		warnf("clipboard: Wayland 下 wl-copy 只能持一种格式，本次只写入 HTML，纯文本目标可能取不到内容")
+		return b.writeHTML(html)
+	}
+	return errors.New("clipboard: no tool selected")
+}
+
+func (b *linuxBackend) writeHTML(html string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return runInput(ctx, b.tool.bin(), []byte(html), b.tool.writeTargetArgs("text/html")...)
 }
 
 func (b *linuxBackend) writeText(text string) error {
@@ -456,6 +511,14 @@ var textFormats = []string{
 	"TEXT",
 }
 
+// htmlFormats are the rich-text targets preferred in order. HTML is captured
+// opportunistically alongside plain text: it never drives the snapshot on its
+// own, only enriches a text copy.
+var htmlFormats = []string{
+	"text/html",
+	"text/html;charset=utf-8",
+}
+
 // chooseImageTarget returns (exact advertised name, canonical encoding) of the
 // best image format in offered, mirroring the Windows "image wins over text"
 // preference.
@@ -473,6 +536,16 @@ func chooseImageTarget(set map[string]bool) (exact, canonical string, ok bool) {
 // chooseTextTarget returns the best advertised text target name, or "".
 func chooseTextTarget(set map[string]bool) string {
 	for _, t := range textFormats {
+		if set[t] {
+			return t
+		}
+	}
+	return ""
+}
+
+// chooseHTMLTarget returns the best advertised HTML target name, or "".
+func chooseHTMLTarget(set map[string]bool) string {
+	for _, t := range htmlFormats {
 		if set[t] {
 			return t
 		}
@@ -519,7 +592,13 @@ func snapshotFromTargets(offered []string, fetch func(mime string) ([]byte, erro
 		if IsFileArtifact(text) {
 			return Content{}, nil
 		}
-		return Content{Kind: KindText, Text: text}, nil
+		c := Content{Kind: KindText, Text: text}
+		if ht := chooseHTMLTarget(set); ht != "" {
+			if hdata, herr := fetch(ht); herr == nil && len(hdata) > 0 {
+				c.HTML = string(hdata)
+			}
+		}
+		return c, nil
 	}
 	return Content{}, nil
 }

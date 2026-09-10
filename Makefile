@@ -20,7 +20,7 @@ ifneq ($(DIRTY),)
 LDFLAGS += -X $(BUILDINFO).Dirty=true
 endif
 
-.PHONY: all build build-windows test vet fmt icon icon-windows clean run-server version
+.PHONY: all build build-windows test test-x11-live vet fmt icon icon-windows clean run-server version
 
 # 默认目标：一次产出全部交付物 —— 本机版 + Windows amd64 版（bin/ 下 4 个文件）。
 # 只想出某一平台时用下面的细分目标：make build / make build-windows。
@@ -47,6 +47,17 @@ version:
 
 test:
 	$(GO) test -count=1 ./...
+
+# Live X11 selection-owner test against a throwaway virtual X server. Covers
+# the target negotiation and INCR streaming that unit tests cannot reach.
+# Needs Xvfb + xclip; changes nothing on the real desktop.
+test-x11-live:
+	@command -v Xvfb >/dev/null 2>&1 || { echo "Xvfb not found (apt install xvfb)"; exit 1; }
+	@command -v xclip >/dev/null 2>&1 || { echo "xclip not found (apt install xclip)"; exit 1; }
+	@mkdir -p /tmp/.X11-unix
+	@Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 & XPID=$$!; \
+	trap "kill $$XPID 2>/dev/null" EXIT; sleep 1; \
+	SHARECLIP_X11_LIVE=1 DISPLAY=:99 $(GO) test -count=1 -run TestX11OwnerLive -v ./internal/clipboard/
 
 vet:
 	$(GO) vet ./...

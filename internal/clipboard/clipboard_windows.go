@@ -34,6 +34,7 @@ var (
 	procSetClipboardData      = user32.NewProc("SetClipboardData")
 	procEnumClipboardFormats  = user32.NewProc("EnumClipboardFormats")
 	procGetClipboardSeqNumber = user32.NewProc("GetClipboardSequenceNumber")
+	procRegisterClipboardFmt  = user32.NewProc("RegisterClipboardFormatW")
 
 	procGlobalAlloc  = kernel32.NewProc("GlobalAlloc")
 	procGlobalLock   = kernel32.NewProc("GlobalLock")
@@ -41,6 +42,21 @@ var (
 	procGlobalSize   = kernel32.NewProc("GlobalSize")
 	procGlobalFree   = kernel32.NewProc("GlobalFree")
 )
+
+// cfHTML is the registered "HTML Format" clipboard format carrying rich text.
+// It is resolved once at package init; 0 means the format could not be
+// registered and rich text is simply not read or written.
+var cfHTML = registerClipboardFormat("HTML Format")
+
+func registerClipboardFormat(name string) uint32 {
+	u16 := utf16.Encode([]rune(name))
+	if len(u16) == 0 {
+		return 0
+	}
+	u16 = append(u16, 0) // RegisterClipboardFormatW expects a NUL-terminated string
+	r, _, _ := procRegisterClipboardFmt.Call(uintptr(unsafe.Pointer(&u16[0])))
+	return uint32(r)
+}
 
 // winBackend talks to the Win32 clipboard API.
 type winBackend struct {
@@ -54,9 +70,12 @@ func NewBackend(pollIntervalMs int) (Backend, error) {
 
 // Snapshot reads the current clipboard. Image content is preferred over text;
 // if the bitmap cannot be decoded but text is present, the text is returned.
+// When the clipboard also offers CF_HTML, the rich-text rendition is captured
+// alongside the plain text.
 func (b *winBackend) Snapshot() (Content, error) {
 	var rawDIB []byte
 	var rawText []byte
+	var rawHTML []byte
 	var hasText bool
 
 	err := withClipboard(func() error {
@@ -85,6 +104,13 @@ func (b *winBackend) Snapshot() (Content, error) {
 			rawText = data
 			hasText = len(data) > 0
 		}
+		if cfHTML != 0 && seen[cfHTML] {
+			data, err := readGlobal(cfHTML)
+			if err != nil {
+				return err
+			}
+			rawHTML = data
+		}
 		return nil
 	})
 	if err != nil {
@@ -111,9 +137,23 @@ func (b *winBackend) Snapshot() (Content, error) {
 		if text == "" || IsFileArtifact(text) {
 			return Content{}, nil // nothing shareable
 		}
-		return Content{Kind: KindText, Text: text}, nil
+		html, _ := htmlFromCFHTML(rawHTML)
+		return Content{Kind: KindText, Text: text, HTML: html}, nil
 	}
 	return Content{}, nil
+}
+
+// htmlFromCFHTML extracts the fragment from a CF_HTML block, returning "" when
+// the block is empty or not recognisable.
+func htmlFromCFHTML(raw []byte) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	frag, ok := cfhtmlFragment(raw)
+	if !ok {
+		return "", false
+	}
+	return string(frag), true
 }
 
 // Write puts text or image content on the clipboard.
@@ -122,7 +162,7 @@ func (b *winBackend) Write(c Content) error {
 	case KindEmpty:
 		return nil
 	case KindText:
-		return b.writeText(c.Text)
+		return b.writeText(c.Text, c.HTML)
 	case KindImage:
 		return b.writeImage(c.PNG)
 	default:
@@ -130,22 +170,50 @@ func (b *winBackend) Write(c Content) error {
 	}
 }
 
-func (b *winBackend) writeText(text string) error {
+func (b *winBackend) writeText(text, html string) error {
 	u16 := utf16.Encode([]rune(text))
 	u16 = append(u16, 0) // NUL terminator expected by CF_UNICODETEXT
-	raw := uint16Bytes(u16)
+	textRaw := uint16Bytes(u16)
+	hasHTML := html != "" && cfHTML != 0
+
 	return withClipboard(func() error {
-		if err := emptyClipboard(); err != nil {
-			return err
-		}
-		h, err := allocAndCopy(raw)
+		// Allocate before emptying the clipboard so a failed allocation cannot
+		// leave the clipboard emptied. Allocation does not require the
+		// clipboard to be open.
+		hText, err := allocAndCopy(textRaw)
 		if err != nil {
 			return err
 		}
-		r, _, e1 := procSetClipboardData.Call(cfUnicodeText, h)
+		var hHTML uintptr
+		if hasHTML {
+			hHTML, err = allocAndCopy(htmlToCFHTML(html))
+			if err != nil {
+				procGlobalFree.Call(hText)
+				return err
+			}
+		}
+
+		if err := emptyClipboard(); err != nil {
+			procGlobalFree.Call(hText)
+			if hasHTML {
+				procGlobalFree.Call(hHTML)
+			}
+			return err
+		}
+		r, _, e1 := procSetClipboardData.Call(cfUnicodeText, hText)
 		if r == 0 {
-			procGlobalFree.Call(h)
-			return fmt.Errorf("clipboard: SetClipboardData: %v", e1)
+			procGlobalFree.Call(hText)
+			if hasHTML {
+				procGlobalFree.Call(hHTML)
+			}
+			return fmt.Errorf("clipboard: SetClipboardData(CF_UNICODETEXT): %v", e1)
+		}
+		if hasHTML {
+			r, _, e1 := procSetClipboardData.Call(uintptr(cfHTML), hHTML)
+			if r == 0 {
+				procGlobalFree.Call(hHTML)
+				return fmt.Errorf("clipboard: SetClipboardData(CF_HTML): %v", e1)
+			}
 		}
 		return nil
 	})

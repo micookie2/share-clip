@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"image"
 	"image/color"
@@ -20,9 +21,13 @@ func openTest(t *testing.T, limit int) *Store {
 	return s
 }
 
+func textClip(text string) Clip {
+	return Clip{Kind: KindText, MIME: "text/plain", Payload: []byte(text)}
+}
+
 func TestAddAndRecent(t *testing.T) {
 	s := openTest(t, 500)
-	id, stored, err := s.Add(KindText, "text/plain", "a", "host-a", []byte("hello 你好"))
+	id, stored, err := s.Add(textClip("hello 你好"), "a", "host-a")
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -32,7 +37,7 @@ func TestAddAndRecent(t *testing.T) {
 	if id != 1 {
 		t.Fatalf("id = %d", id)
 	}
-	if _, _, err := s.Add(KindImage, "image/png", "b", "host-b", bytes.Repeat([]byte{1, 2, 3}, 100)); err != nil {
+	if _, _, err := s.Add(Clip{Kind: KindImage, MIME: "image/png", Payload: bytes.Repeat([]byte{1, 2, 3}, 100)}, "b", "host-b"); err != nil {
 		t.Fatalf("Add image: %v", err)
 	}
 
@@ -55,26 +60,127 @@ func TestAddAndRecent(t *testing.T) {
 func TestContent(t *testing.T) {
 	s := openTest(t, 500)
 	payload := []byte{0x89, 'P', 'N', 'G', 1, 2, 3}
-	id, _, err := s.Add(KindImage, "image/png", "a", "h", payload)
+	id, _, err := s.Add(Clip{Kind: KindImage, MIME: "image/png", Payload: payload}, "a", "h")
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	e, got, err := s.Content(id)
+	e, clip, err := s.Content(id)
 	if err != nil {
 		t.Fatalf("Content: %v", err)
 	}
-	if !bytes.Equal(got, payload) || e.Kind != KindImage {
-		t.Fatalf("got %v (%s)", got, e.Kind)
+	if !bytes.Equal(clip.Payload, payload) || e.Kind != KindImage {
+		t.Fatalf("got %v (%s)", clip.Payload, e.Kind)
 	}
 	if _, _, err := s.Content(9999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
 
+func TestAddRichTextAndPreview(t *testing.T) {
+	s := openTest(t, 500)
+	html := "<html><body><b>hello</b> world</body></html>"
+	id, stored, err := s.Add(Clip{
+		Kind: KindText, MIME: "text/html", MIME2: "text/plain",
+		Payload: []byte(html), Payload2: []byte("hello world"),
+	}, "a", "host-a")
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !stored || id != 1 {
+		t.Fatalf("stored=%v id=%d", stored, id)
+	}
+
+	// The preview must come from the plain-text rendition, not the HTML.
+	items, err := s.Recent(50, 0)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(items) != 1 || items[0].Kind != KindText || items[0].MIME != "text/html" ||
+		items[0].MIME2 != "text/plain" || items[0].TextPreview != "hello world" {
+		t.Fatalf("items[0] = %+v", items[0])
+	}
+
+	// Content round-trips both renditions.
+	_, clip, err := s.Content(id)
+	if err != nil {
+		t.Fatalf("Content: %v", err)
+	}
+	if !bytes.Equal(clip.Payload, []byte(html)) || !bytes.Equal(clip.Payload2, []byte("hello world")) {
+		t.Fatalf("clip = %+v", clip)
+	}
+}
+
+func TestAddIgnoresRichTextDuplicate(t *testing.T) {
+	s := openTest(t, 500)
+	clip := Clip{
+		Kind: KindText, MIME: "text/html", MIME2: "text/plain",
+		Payload: []byte("<b>hi</b>"), Payload2: []byte("hi"),
+	}
+	if _, stored, _ := s.Add(clip, "a", "host-a"); !stored {
+		t.Fatal("first Add reported as duplicate")
+	}
+	// Same HTML and plain text from another host: duplicate.
+	if _, stored, _ := s.Add(clip, "b", "host-b"); stored {
+		t.Fatal("identical rich text from another host should be ignored")
+	}
+	// Same HTML but different plain text is a different copy.
+	changed := clip
+	changed.Payload2 = []byte("hi there")
+	if _, stored, _ := s.Add(changed, "a", "host-a"); !stored {
+		t.Fatal("rich text with different plain text must store")
+	}
+}
+
+// TestMigrationAddsColumns verifies that a database created by an older
+// release (without the mime2/payload2 columns) is upgraded in place and can
+// then store rich text.
+func TestMigrationAddsColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE history (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	kind        TEXT    NOT NULL,
+	mime        TEXT    NOT NULL,
+	payload     BLOB    NOT NULL,
+	source_id   TEXT    NOT NULL DEFAULT '',
+	source_name TEXT    NOT NULL DEFAULT '',
+	created_at  INTEGER NOT NULL
+)`)
+	if err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	db.Close()
+
+	s, err := Open(path, 500)
+	if err != nil {
+		t.Fatalf("Open migrated db: %v", err)
+	}
+	defer s.Close()
+
+	id, stored, err := s.Add(Clip{
+		Kind: KindText, MIME: "text/html", MIME2: "text/plain",
+		Payload: []byte("<i>x</i>"), Payload2: []byte("x"),
+	}, "a", "host-a")
+	if err != nil {
+		t.Fatalf("Add after migration: %v", err)
+	}
+	if !stored || id != 1 {
+		t.Fatalf("stored=%v id=%d", stored, id)
+	}
+	items, _ := s.Recent(50, 0)
+	if len(items) != 1 || items[0].MIME2 != "text/plain" || items[0].TextPreview != "x" {
+		t.Fatalf("migrated entry = %+v", items)
+	}
+}
+
 func TestPruneBeyondLimit(t *testing.T) {
 	s := openTest(t, 3)
 	for i := 0; i < 10; i++ {
-		if _, _, err := s.Add(KindText, "text/plain", "a", "h", []byte("x"+string(rune('0'+i)))); err != nil {
+		if _, _, err := s.Add(textClip("x"+string(rune('0'+i))), "a", "h"); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -94,7 +200,7 @@ func TestPruneBeyondLimit(t *testing.T) {
 func TestPagination(t *testing.T) {
 	s := openTest(t, 500)
 	for i := 0; i < 5; i++ {
-		if _, _, err := s.Add(KindText, "text/plain", "a", "h", []byte{byte('a' + i)}); err != nil {
+		if _, _, err := s.Add(textClip(string([]byte{byte('a' + i)})), "a", "h"); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -108,22 +214,22 @@ func TestPagination(t *testing.T) {
 
 func TestAddIgnoresConsecutiveDuplicates(t *testing.T) {
 	s := openTest(t, 500)
-	if _, stored, _ := s.Add(KindText, "text/plain", "a", "h", []byte("same")); !stored {
+	if _, stored, _ := s.Add(textClip("same"), "a", "h"); !stored {
 		t.Fatal("first Add reported as duplicate")
 	}
 	// Exact repeat of the latest entry: ignored, count unchanged.
-	if id, stored, err := s.Add(KindText, "text/plain", "b", "host-b", []byte("same")); stored || id != 0 || err != nil {
+	if id, stored, err := s.Add(textClip("same"), "b", "host-b"); stored || id != 0 || err != nil {
 		t.Fatalf("repeat: id=%d stored=%v err=%v", id, stored, err)
 	}
 	// Same text again as a *different* kind is not a duplicate.
-	if _, stored, _ := s.Add(KindImage, "image/png", "a", "h", []byte("same")); !stored {
+	if _, stored, _ := s.Add(Clip{Kind: KindImage, MIME: "image/png", Payload: []byte("same")}, "a", "h"); !stored {
 		t.Fatal("image with same bytes reported as duplicate")
 	}
 	// A different entry breaks the streak; repeating the old value now stores.
-	if _, stored, _ := s.Add(KindText, "text/plain", "a", "h", []byte("other")); !stored {
+	if _, stored, _ := s.Add(textClip("other"), "a", "h"); !stored {
 		t.Fatal("different text reported as duplicate")
 	}
-	if _, stored, _ := s.Add(KindText, "text/plain", "a", "h", []byte("same")); !stored {
+	if _, stored, _ := s.Add(textClip("same"), "a", "h"); !stored {
 		t.Fatal("stale same-value text reported as duplicate")
 	}
 	// Only the latest stored entry counts; the ignored ones left no rows.
@@ -133,7 +239,7 @@ func TestAddIgnoresConsecutiveDuplicates(t *testing.T) {
 	}
 	// A stored duplicate-free text that differs only by source name is still
 	// a duplicate (origin does not count).
-	if _, stored, _ := s.Add(KindText, "text/plain", "z", "host-z", []byte("same")); stored {
+	if _, stored, _ := s.Add(textClip("same"), "z", "host-z"); stored {
 		t.Fatal("same content from another host should be ignored")
 	}
 }
@@ -149,11 +255,11 @@ func TestAddIgnoresReencodedDuplicateImage(t *testing.T) {
 	if bytes.Equal(orig, canon) {
 		t.Fatal("test PNGs must differ byte-wise to model a re-encoding")
 	}
-	if _, stored, err := s.Add(KindImage, "image/png", "a", "host-a", orig); !stored || err != nil {
+	if _, stored, err := s.Add(Clip{Kind: KindImage, MIME: "image/png", Payload: orig}, "a", "host-a"); !stored || err != nil {
 		t.Fatalf("first image Add: stored=%v err=%v", stored, err)
 	}
 	// Re-encoding of the same picture right after: ignored, no row added.
-	if id, stored, err := s.Add(KindImage, "image/png", "b", "host-b", canon); stored || id != 0 || err != nil {
+	if id, stored, err := s.Add(Clip{Kind: KindImage, MIME: "image/png", Payload: canon}, "b", "host-b"); stored || id != 0 || err != nil {
 		t.Fatalf("re-encoded duplicate stored: id=%d stored=%v err=%v", id, stored, err)
 	}
 	// A genuinely different picture stores.
@@ -161,12 +267,12 @@ func TestAddIgnoresReencodedDuplicateImage(t *testing.T) {
 	if bytes.Equal(other, orig) || bytes.Equal(other, canon) {
 		t.Fatal("test pictures must differ")
 	}
-	if _, stored, _ := s.Add(KindImage, "image/png", "a", "host-a", other); !stored {
+	if _, stored, _ := s.Add(Clip{Kind: KindImage, MIME: "image/png", Payload: other}, "a", "host-a"); !stored {
 		t.Fatal("different picture reported as duplicate")
 	}
 	// Another encoding of the older picture after an interrupting entry
 	// stores again (only consecutive duplicates are filtered).
-	if _, stored, _ := s.Add(KindImage, "image/png", "a", "host-a", canon); !stored {
+	if _, stored, _ := s.Add(Clip{Kind: KindImage, MIME: "image/png", Payload: canon}, "a", "host-a"); !stored {
 		t.Fatal("stale same-picture image reported as duplicate")
 	}
 	items, _ := s.Recent(50, 0)
@@ -222,7 +328,7 @@ func canonicalPNG(t *testing.T, data []byte) []byte {
 func TestClear(t *testing.T) {
 	s := openTest(t, 500)
 	for i := 0; i < 4; i++ {
-		s.Add(KindText, "text/plain", "a", "h", []byte{byte('a' + i)})
+		s.Add(textClip(string([]byte{byte('a' + i)})), "a", "h")
 	}
 	if err := s.Clear(); err != nil {
 		t.Fatalf("Clear: %v", err)

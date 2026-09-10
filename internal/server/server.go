@@ -290,7 +290,13 @@ func (s *Server) dispatch(c *client, m *protocol.Msg) bool {
 		// row, no broadcast, no web event).
 		m.ClientID = c.id
 		m.ClientName = c.name
-		entryID, stored, err := s.store.Add(kind, m.MIME, c.id, c.name, m.Payload)
+		entryID, stored, err := s.store.Add(store.Clip{
+			Kind:     kind,
+			MIME:     m.MIME,
+			MIME2:    m.MIME2,
+			Payload:  m.Payload,
+			Payload2: m.Payload2,
+		}, c.id, c.name)
 		if err != nil {
 			s.logf("[store] %v", err)
 			return true
@@ -303,11 +309,12 @@ func (s *Server) dispatch(c *client, m *protocol.Msg) bool {
 			ID:         entryID,
 			Kind:       kind,
 			MIME:       m.MIME,
-			Size:       len(m.Payload),
+			MIME2:      m.MIME2,
+			Size:       len(m.Payload) + len(m.Payload2),
 			SourceID:   c.id,
 			SourceName: c.name,
 			Time:       time.Now().UTC().Format(time.RFC3339),
-			Preview:    textPreview(kind, m.Payload),
+			Preview:    textPreview(kind, m.PlainText()),
 		})
 		n := c.hub.broadcastOthers(m.MustFrame(s.maxPayload()), c)
 		s.logf("[push] %s -> %d client(s) (history #%d)", m.Summary(), n, entryID)
@@ -320,7 +327,7 @@ func (s *Server) dispatch(c *client, m *protocol.Msg) bool {
 
 func mimeKind(mime string) (string, bool) {
 	switch mime {
-	case protocol.MIMEText:
+	case protocol.MIMEText, protocol.MIMEHTML:
 		return store.KindText, true
 	case protocol.MIMEImage:
 		return store.KindImage, true
@@ -347,6 +354,7 @@ type itemEntry struct {
 	ID         int64  `json:"id"`
 	Kind       string `json:"kind"`
 	MIME       string `json:"mime"`
+	MIME2      string `json:"mime2,omitempty"`
 	Size       int    `json:"size"`
 	SourceID   string `json:"sourceId"`
 	SourceName string `json:"sourceName"`
@@ -388,6 +396,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			ID:         it.ID,
 			Kind:       it.Kind,
 			MIME:       it.MIME,
+			MIME2:      it.MIME2,
 			Size:       it.Size,
 			SourceID:   it.SourceID,
 			SourceName: it.SourceName,
@@ -404,7 +413,7 @@ func (s *Server) handleContent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	e, payload, err := s.store.Content(id)
+	e, clip, err := s.store.Content(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "entry not found")
@@ -416,7 +425,7 @@ func (s *Server) handleContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", e.MIME)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(payload)
+	_, _ = w.Write(clip.Payload)
 }
 
 // handlePush re-broadcasts a stored history entry to every online client.
@@ -426,7 +435,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	e, payload, err := s.store.Content(id)
+	_, clip, err := s.store.Content(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "entry not found")
@@ -435,7 +444,9 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	msg := protocol.NewClip(e.MIME, protocol.OriginWeb, protocol.OriginName, payload)
+	msg := protocol.NewClip(clip.MIME, protocol.OriginWeb, protocol.OriginName, clip.Payload)
+	msg.MIME2 = clip.MIME2
+	msg.Payload2 = clip.Payload2
 	n := s.hub.broadcastAll(msg.MustFrame(s.maxPayload()))
 	s.logf("[push] %s -> %d client(s) (entry #%d)", msg.Summary(), n, id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "clients": n})

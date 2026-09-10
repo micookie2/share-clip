@@ -147,6 +147,105 @@ func TestBroadcastImageToOthers(t *testing.T) {
 	}
 }
 
+// TestBroadcastRichTextToOthers covers the rich-text path end to end: a
+// text/html clip carries both the HTML and plain-text renditions, both are
+// broadcast, and the history preview is derived from the plain text.
+func TestBroadcastRichTextToOthers(t *testing.T) {
+	s := startServer(t)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	defer s.Close()
+
+	c1 := dialClient(t, ts.URL, "id-a", "host-a")
+	c2 := dialClient(t, ts.URL, "id-b", "host-b")
+
+	html := "<b>hello</b> world"
+	plain := "hello world"
+	send(t, c1, protocol.NewClipHTML("id-a", "host-a", []byte(html), []byte(plain)))
+
+	got := readMsg(t, c2, 5*time.Second)
+	if got == nil || got.Kind != protocol.KindClip || got.MIME != protocol.MIMEHTML || got.MIME2 != protocol.MIMEText {
+		t.Fatalf("c2 rich clip mismatch: %+v", got)
+	}
+	if string(got.Payload) != html || string(got.Payload2) != plain {
+		t.Fatalf("payloads mismatch: %q %q", got.Payload, got.Payload2)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/history?limit=10&offset=0")
+	if err != nil {
+		t.Fatalf("GET history: %v", err)
+	}
+	defer resp.Body.Close()
+	var hist struct {
+		Items []struct {
+			Kind    string `json:"kind"`
+			MIME2   string `json:"mime2"`
+			Preview string `json:"preview"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hist); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(hist.Items) != 1 || hist.Items[0].Kind != "text" ||
+		hist.Items[0].MIME2 != protocol.MIMEText || hist.Items[0].Preview != plain {
+		t.Fatalf("history mismatch: %+v", hist.Items)
+	}
+}
+
+// TestWebPushRichText ensures the web push re-sends both renditions of a
+// stored rich-text entry.
+func TestWebPushRichText(t *testing.T) {
+	s := startServer(t)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	defer s.Close()
+
+	c1 := dialClient(t, ts.URL, "id-a", "host-a")
+	c2 := dialClient(t, ts.URL, "id-b", "host-b")
+
+	html := "<i>pushed</i>"
+	plain := "pushed"
+	send(t, c1, protocol.NewClipHTML("id-a", "host-a", []byte(html), []byte(plain)))
+	if m := readMsg(t, c2, 5*time.Second); m == nil || m.MIME != protocol.MIMEHTML {
+		t.Fatalf("c2 missed rich clip: %+v", m)
+	}
+
+	// Find the entry id and push it from the web.
+	resp, err := http.Get(ts.URL + "/api/history?limit=1&offset=0")
+	if err != nil {
+		t.Fatalf("GET history: %v", err)
+	}
+	var hist struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hist); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	resp.Body.Close()
+	if len(hist.Items) != 1 {
+		t.Fatalf("history len = %d", len(hist.Items))
+	}
+	id := hist.Items[0].ID
+
+	resp, err = http.Post(fmt.Sprintf("%s/api/items/%d/push", ts.URL, id), "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST push: %v", err)
+	}
+	resp.Body.Close()
+
+	for _, conn := range []*websocket.Conn{c1, c2} {
+		got := readMsg(t, conn, 5*time.Second)
+		if got == nil || got.Kind != protocol.KindClip || got.ClientID != protocol.OriginWeb {
+			t.Fatalf("push not received: %+v", got)
+		}
+		if string(got.Payload) != html || string(got.Payload2) != plain {
+			t.Fatalf("push payloads mismatch: %q %q", got.Payload, got.Payload2)
+		}
+	}
+}
+
 // TestLargeClipBeyondLibraryReadLimit guards against regressions of the
 // WebSocket library's default 32 KiB per-message read limit: screenshots are
 // routinely bigger than that.

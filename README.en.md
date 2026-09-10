@@ -16,8 +16,10 @@ live to all other clients and keeps a SQLite history. The server also serves a
 small web page where you can browse history and re-push any entry to every
 online client.
 
-Supports **text** and **images** (PNG). **Copying files is not supported** and
-is silently ignored.
+Supports **text**, **rich text (HTML)** and **images** (PNG). **Copying files
+is not supported** and is silently ignored. Rich-text sync carries both a
+plain-text and an HTML rendition, so pasting into a browser/Office editor keeps
+its formatting while pasting into a plain-text field still yields plain text.
 
 ```
    Windows box A                 Linux box B
@@ -54,9 +56,15 @@ is silently ignored.
   (CF_DIB on Windows; xclip `TARGETS` / `wl-paste --list-types` on Linux): an
   image format wins over text, and non-PNG encodings (JPEG/GIF/BMP/TIFF/WebP)
   are converted to PNG before sharing.
+- **Own-copy protection**: if a peer sends this machine's own recent copy straight
+  back — either unchanged or downgraded to plain text — the client ignores it
+  instead of overwriting the local clipboard. Otherwise a rich copy could turn
+  into plain text locally right after copying, because the echoed plain text
+  replaced the HTML on the clipboard.
 - **Duplicate filtering**: if a copy duplicates the **most recent** history entry,
   the server drops it — no write, no broadcast. Text duplicates mean byte-identical
-  payloads; image duplicates mean PNGs that *decode to the same picture*, so the
+  payloads (rich text must match in both HTML and plain text); image duplicates
+  mean PNGs that *decode to the same picture*, so the
   same image repackaged in a different PNG encoding (e.g. by a Windows CF_DIB
   bitmap round-trip) is still broadcast only once — clients never receive the
   same picture twice. Windows (clipboard sequence number) and Linux/X11 (XFixes
@@ -228,9 +236,10 @@ cmd/shareclip-server/   server entry point
 cmd/shareclip-client/   client entry point
 internal/agent/         client logic: clipboard watch, send/receive, reconnect
 internal/clipboard/     cross-platform clipboard abstraction + watcher
-  clipboard_windows.go  Win32: CF_UNICODETEXT / CF_DIB (stdlib syscall)
+  clipboard_windows.go  Win32: CF_UNICODETEXT / CF_HTML / CF_DIB (stdlib syscall)
   clipboard_linux.go    Linux: xclip / wl-clipboard; format listing, image
-                        first, non-PNG → PNG conversion
+                        first, rich text, non-PNG → PNG conversion
+  x11owner_linux.go     X11: native CLIPBOARD selection owner (text/plain + text/html)
   x11watch_linux.go     X11: XFixes copy-event listener (falls back to polling)
 internal/buildinfo/     version/commit/build time (-ldflags; logs, -v, web UI)
 internal/dib/           pure-Go DIB↔PNG codec (Windows images)
@@ -264,11 +273,15 @@ clearing history.
   that window, it cannot fully avoid it.
 - Image formats cover common web/office cases (PNG/JPEG/GIF/BMP/TIFF/WebP);
   exotic ones (XPM, PSD, …) are still missed.
+- On Wayland, writing rich text can only hold one MIME type with `wl-copy`, so
+  HTML is preferred (formatting is kept) and plain-text-only paste targets (like
+  a terminal) may get nothing. X11 and Windows write both plain text and HTML
+  and have no such limitation.
 - Web push always targets all online clients; no per-machine targeting yet.
 - Copies made while disconnected are not replayed after reconnecting — just copy
   again.
-- History is browse-only; formats beyond text/image (file lists, rich HTML) are
-  not handled.
+- History is browse-only; formats beyond text/image (e.g. file lists) are not
+  handled.
 
 ## Roadmap
 

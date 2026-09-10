@@ -55,10 +55,13 @@ func (k Kind) String() string {
 }
 
 // Content is a snapshot of the clipboard. Exactly one of Text or PNG is
-// meaningful, depending on Kind.
+// meaningful, depending on Kind. For rich text (KindText with a non-empty
+// HTML), Text carries the plain-text rendition and HTML the text/html
+// rendition; a plain-text copy has an empty HTML.
 type Content struct {
 	Kind Kind
 	Text string // UTF-8 text, only when Kind == KindText
+	HTML string // HTML rendition, only when Kind == KindText (may be empty)
 	PNG  []byte // PNG encoded bytes, only when Kind == KindImage
 }
 
@@ -73,6 +76,10 @@ func (c Content) Digest() [32]byte {
 	case KindText:
 		h.Write([]byte{0})
 		h.Write([]byte(c.Text))
+		if c.HTML != "" {
+			h.Write([]byte{1})
+			h.Write([]byte(c.HTML))
+		}
 	case KindImage:
 		h.Write([]byte{1})
 		h.Write(c.PNG)
@@ -104,6 +111,18 @@ type Backend interface {
 // clipboard_linux.go and clipboard_unsupported.go); pollIntervalMs is used by
 // platforms that must poll (Linux) and ignored on Windows.
 //func NewBackend(pollIntervalMs int) (Backend, error)
+
+// warnf reports non-fatal clipboard degradation — for example a rich-text
+// write that had to fall back to a lower-fidelity path. It defaults to a
+// no-op so library use stays silent, and is replaced by SetWarnf.
+var warnf = func(string, ...any) {}
+
+// SetWarnf installs a callback for non-fatal clipboard warnings.
+func SetWarnf(f func(string, ...any)) {
+	if f != nil {
+		warnf = f
+	}
+}
 
 // Watcher monitors one Backend from a single goroutine and reports local
 // clipboard changes through OnChange. All backend access is serialized by the

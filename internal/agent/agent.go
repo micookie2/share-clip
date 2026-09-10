@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,7 +44,28 @@ type Agent struct {
 	out      chan *protocol.Msg // outbound clip messages
 	incoming chan *protocol.Msg // inbound clip messages, applied off the read path
 	dropped  atomic.Int64
+
+	// sentLog remembers what this client recently put on the wire so an echo
+	// of its own copy (which the server normally never relays back) cannot
+	// overwrite the local clipboard. See isOwnEcho.
+	sentMu  sync.Mutex
+	sentLog []sentClip
 }
+
+// sentClip is one entry of the recent-send ring used for echo protection.
+type sentClip struct {
+	digest [32]byte
+	plain  string
+	rich   bool
+	at     time.Time
+}
+
+// echoWindow bounds how long after sending a copy an incoming clip is still
+// treated as a possible echo of it; echoLogMax bounds the ring size.
+const (
+	echoWindow = 20 * time.Second
+	echoLogMax = 16
+)
 
 // logf writes one log record unless the agent runs quiet. Every record goes
 // through logx, so a clipboard payload can never split it over several lines.
@@ -67,6 +89,9 @@ func Run(ctx context.Context, cfg Config) error {
 		out:      make(chan *protocol.Msg, 16),
 		incoming: make(chan *protocol.Msg, 16),
 	}
+	// Surface clipboard degradations (e.g. a rich write falling back to plain
+	// text) in the client log instead of losing formatting silently.
+	clipboard.SetWarnf(a.logf)
 	a.watcher = clipboard.NewWatcher(backend, a.onLocalChange,
 		clipboard.WithOnError(func(err error) {
 			a.logf("[client] 读取剪贴板出错: %v", err)
@@ -246,10 +271,15 @@ func (a *Agent) maxPayload() int {
 
 // onLocalChange runs on the watcher goroutine for every genuine local copy.
 func (a *Agent) onLocalChange(c clipboard.Content) {
+	a.rememberSent(c)
 	var m *protocol.Msg
 	switch c.Kind {
 	case clipboard.KindText:
-		m = protocol.NewClip(protocol.MIMEText, a.cfg.ClientID, a.cfg.Name, []byte(c.Text))
+		if c.HTML != "" {
+			m = protocol.NewClipHTML(a.cfg.ClientID, a.cfg.Name, []byte(c.HTML), []byte(c.Text))
+		} else {
+			m = protocol.NewClip(protocol.MIMEText, a.cfg.ClientID, a.cfg.Name, []byte(c.Text))
+		}
 	case clipboard.KindImage:
 		m = protocol.NewClip(protocol.MIMEImage, a.cfg.ClientID, a.cfg.Name, c.PNG)
 	default:
@@ -292,9 +322,59 @@ func (a *Agent) handleIncoming(m *protocol.Msg) {
 	if !ok {
 		return
 	}
+	if a.isOwnEcho(content) {
+		a.logf("[client] 忽略自身副本回传，不改写本机剪贴板: %s", m.Summary())
+		return
+	}
 	if err := a.watcher.ApplyRemote(content); err != nil {
 		a.logf("[client] 写入剪贴板失败: %v", err)
+	} else {
+		a.logf("[client] 已写入本机剪贴板: %s", m.Summary())
 	}
+}
+
+// rememberSent records content this client just shared so a later echo of it
+// can be recognized. It runs on the watcher goroutine.
+func (a *Agent) rememberSent(c clipboard.Content) {
+	a.sentMu.Lock()
+	defer a.sentMu.Unlock()
+	a.sentLog = append(a.sentLog, sentClip{
+		digest: c.Digest(),
+		plain:  c.Text,
+		rich:   c.HTML != "",
+		at:     time.Now(),
+	})
+	if len(a.sentLog) > echoLogMax {
+		a.sentLog = a.sentLog[len(a.sentLog)-echoLogMax:]
+	}
+}
+
+// isOwnEcho reports whether incoming content is this client's own recent copy
+// coming back. The server normally relays a clip to every client except its
+// sender, so this should not happen; when it does (for example a peer echoes
+// the clip back, or downgrades a rich copy to plain text on the way), applying
+// it would replace the local clipboard with a copy of what the user just
+// copied — the "share-clip clobbered my clipboard" symptom. Echoes are
+// therefore ignored, within echoWindow of the send.
+func (a *Agent) isOwnEcho(c clipboard.Content) bool {
+	now := time.Now()
+	d := c.Digest()
+	a.sentMu.Lock()
+	defer a.sentMu.Unlock()
+	for len(a.sentLog) > 0 && now.Sub(a.sentLog[0].at) > echoWindow {
+		a.sentLog = a.sentLog[1:]
+	}
+	for _, s := range a.sentLog {
+		if s.digest == d {
+			return true
+		}
+		// A rich copy that came back as plain text only (formatting dropped
+		// somewhere in the round trip) is still the same copy.
+		if s.rich && c.HTML == "" && c.Text != "" && s.plain == c.Text {
+			return true
+		}
+	}
+	return false
 }
 
 func contentFromMessage(m *protocol.Msg) (clipboard.Content, bool) {
@@ -304,6 +384,15 @@ func contentFromMessage(m *protocol.Msg) (clipboard.Content, bool) {
 			return clipboard.Content{}, false
 		}
 		return clipboard.Content{Kind: clipboard.KindText, Text: string(m.Payload)}, true
+	case protocol.MIMEHTML:
+		if len(m.Payload) == 0 {
+			return clipboard.Content{}, false
+		}
+		return clipboard.Content{
+			Kind: clipboard.KindText,
+			Text: string(m.Payload2),
+			HTML: string(m.Payload),
+		}, true
 	case protocol.MIMEImage:
 		if len(m.Payload) == 0 {
 			return clipboard.Content{}, false

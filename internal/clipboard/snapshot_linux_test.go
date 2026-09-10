@@ -75,6 +75,23 @@ func TestChooseTextTarget(t *testing.T) {
 	}
 }
 
+func TestChooseHTMLTarget(t *testing.T) {
+	cases := []struct {
+		offered []string
+		want    string
+	}{
+		{[]string{"UTF8_STRING"}, ""},
+		{[]string{"text/html"}, "text/html"},
+		{[]string{"text/html;charset=utf-8", "text/html"}, "text/html"},
+		{[]string{"text/plain", "text/html;charset=utf-8"}, "text/html;charset=utf-8"},
+	}
+	for _, c := range cases {
+		if got := chooseHTMLTarget(offerSet(c.offered)); got != c.want {
+			t.Errorf("chooseHTMLTarget(%v) = %q, want %q", c.offered, got, c.want)
+		}
+	}
+}
+
 func TestSnapshotFromTargets(t *testing.T) {
 	img := testRGBAImage()
 	pngBytes := encodePng(t, img)
@@ -188,6 +205,25 @@ func TestSnapshotFromTargets(t *testing.T) {
 		}
 		if c.Kind != KindText || c.Text != "hi" {
 			t.Fatalf("got %+v", c)
+		}
+		if c.HTML != "" {
+			t.Fatalf("missing HTML target must not produce HTML, got %q", c.HTML)
+		}
+	})
+
+	t.Run("rich text captures html and plain", func(t *testing.T) {
+		var req []string
+		c, err := snapshotFromTargets(
+			[]string{"UTF8_STRING", "text/html"},
+			newFetch(map[string][]byte{
+				"UTF8_STRING": []byte("hello"),
+				"text/html":   []byte("<b>hello</b>"),
+			}, &req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind != KindText || c.Text != "hello" || c.HTML != "<b>hello</b>" {
+			t.Fatalf("rich text mismatch: %+v", c)
 		}
 	})
 

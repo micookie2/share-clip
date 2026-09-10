@@ -62,6 +62,45 @@ func TestControlFrameNoPayload(t *testing.T) {
 	}
 }
 
+func TestFrameRoundTripHTMLWithPlainText(t *testing.T) {
+	m := NewClipHTML("host-1", "alice", []byte("<b>hello</b>"), []byte("hello"))
+	frame, err := m.Frame(0)
+	if err != nil {
+		t.Fatalf("Frame: %v", err)
+	}
+	got, err := Parse(frame, 0)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Kind != KindClip || got.MIME != MIMEHTML || got.MIME2 != MIMEText {
+		t.Fatalf("mimes mismatch: %+v", got)
+	}
+	if !bytes.Equal(got.Payload, []byte("<b>hello</b>")) || !bytes.Equal(got.Payload2, []byte("hello")) {
+		t.Fatalf("payloads mismatch: %q %q", got.Payload, got.Payload2)
+	}
+	if got.Size != len(m.Payload) {
+		t.Fatalf("Size = %d, want %d", got.Size, len(m.Payload))
+	}
+	// A single-payload frame must remain byte-identical to the old format.
+	plain := NewClip(MIMEText, "h", "n", []byte("hi"))
+	plainFrame, _ := plain.Frame(0)
+	plainParsed, err := Parse(plainFrame, 0)
+	if err != nil {
+		t.Fatalf("Parse plain: %v", err)
+	}
+	if plainParsed.MIME2 != "" || !bytes.Equal(plainParsed.Payload, []byte("hi")) {
+		t.Fatalf("plain frame regressed: %+v", plainParsed)
+	}
+}
+
+func TestHTMLSummary(t *testing.T) {
+	m := NewClipHTML("host-1", "alice", []byte("<b>hello</b>"), []byte("hello"))
+	got := m.Summary()
+	if !strings.Contains(got, "text/html+text/plain") || !strings.Contains(got, "hello") {
+		t.Fatalf("rich summary = %q", got)
+	}
+}
+
 func TestOversizedPayloadRejected(t *testing.T) {
 	m := &Msg{Kind: KindClip, MIME: MIMEText, Payload: bytes.Repeat([]byte{'a'}, 4096)}
 	frame, err := m.Frame(4095)

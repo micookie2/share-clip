@@ -15,7 +15,9 @@
 历史；server 同时提供一个小型 Web 页面，可以查看历史并选择条目重新推送到
 全部在线客户端。
 
-支持 **文本** 与 **图片**（PNG）。**文件复制暂不支持**，会被自动忽略。
+支持 **文本**、**富文本（HTML）** 与 **图片**（PNG）。**文件复制暂不支持**，
+会被自动忽略。富文本同步会同时携带纯文本与 HTML 两种格式：粘贴到浏览器/
+Office 等富文本编辑器保留格式，粘贴到纯文本框仍得到纯文本。
 
 ```
   Windows 机器 A                Linux 机器 B
@@ -44,14 +46,18 @@
   机器互相广播死循环）；你本人真实的再次复制不受影响。回环抑制按“写入后本机
   剪贴板实际呈现的内容”识别，因此即使 Windows 把收到的 PNG 经 CF_DIB 位图
   往返后以不同字节重新编码，本机也不会把它当成本地新复制而回传。
+- **自身副本保护**：本机刚发出的内容若被对端原样回传，或被对端降级成纯文本后
+  回传，本机不会再拿它覆盖剪贴板——否则会出现“刚复制完，粘贴却变成纯文本”
+  （富文本的 HTML 被回传的纯文本覆盖）。
 - 同时携带文本与图片的复制以**图片优先**。Windows 与 Linux 都会先枚举剪贴板
   上实际提供的格式（Windows 的 CF_DIB、Linux 的 xclip TARGETS / wl-paste
   --list-types）：有图片格式就发图片，图片缺失或无法解码才退回文本；非 PNG
   编码（JPEG/GIF/BMP/TIFF/WebP）会在发送前转成 PNG。
 - **重复内容过滤**：本次复制与**最近一条**历史内容相同时，server 直接忽略——
-  不入库、也不广播。文本按“同类型 + 同字节”判定，图片按“解码后的画面相同”
-  判定：同一张图即使被另一台机器（例如 Windows 的 CF_DIB 位图往返）以不同
-  的 PNG 编码重新打包，也只会广播一次，不会出现“重复收到同一张图”。
+  不入库、也不广播。文本按“同类型 + 同字节”判定（富文本需要 HTML 与纯文本
+  两者都一致才视为重复），图片按“解码后的画面相同”判定：同一张图即使被另一台
+  机器（例如 Windows 的 CF_DIB 位图往返）以不同的 PNG 编码重新打包，也只会
+  广播一次，不会出现“重复收到同一张图”。
   Windows 与 Linux/X11（XFixes 复制事件）都会把“相同内容再次复制”照常上报，
   Linux/Wayland 只有轮询可用、无法区分，统一放到 server 端过滤后行为一致。
   中间复制过任何不同内容后，再复制回旧内容仍会正常广播；不同机器上连续复制
@@ -209,8 +215,9 @@ cmd/shareclip-server/   server 入口
 cmd/shareclip-client/   client 入口
 internal/agent/         client 主逻辑：监听剪切板、收发、自动重连
 internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语义）
-  clipboard_windows.go  Win32：CF_UNICODETEXT / CF_DIB（stdlib syscall）
-  clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+图优先+多格式转 PNG
+  clipboard_windows.go  Win32：CF_UNICODETEXT / CF_HTML / CF_DIB（stdlib syscall）
+  clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+图优先+富文本+多格式转 PNG
+  x11owner_linux.go     X11：原生 CLIPBOARD 选择所有者（同时提供 text/plain 与 text/html）
   x11watch_linux.go     X11：XFixes 复制事件监听（事件驱动，不可用时退回轮询）
 internal/buildinfo/     版本号/commit/构建时间（-ldflags 注入，日志、-v、Web 共用）
 internal/dib/           纯 Go DIB↔PNG 编解码（Windows 图片用）
@@ -240,9 +247,12 @@ e2e 测试用真实的 WebSocket 连接验证：广播给除发送者外所有 c
   程序退出而消失——事件驱动也只能把漏检窗口缩到最小，无法完全避免。
 - 图片格式覆盖常见 Web/办公场景（PNG/JPEG/GIF/BMP/TIFF/WebP），小众格式
   （XPM、PSD 等）仍会漏。
+- Wayland 侧写富文本时，`wl-copy` 一次只能持有一种 MIME，因此会优先写入
+  HTML（保格式）；粘贴到只接受纯文本的目标（如终端）时可能取不到纯文本。
+  X11 与 Windows 会同时写入纯文本与 HTML，无此限制。
 - Web 推送只能推送到全部在线 client，暂不支持指定某台机器。
 - 断线期间本机复制的内容不会补发（重连后重新复制即可）。
-- 历史仅展示；文本/图片之外的格式（如文件列表、富文本 HTML）不处理。
+- 历史仅展示；文件列表等文本/图片之外的格式不处理。
 
 ## Roadmap（可能的方向）
 

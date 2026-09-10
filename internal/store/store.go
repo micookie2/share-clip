@@ -24,16 +24,28 @@ const (
 	KindImage = "image"
 )
 
+// Clip is the content of one history entry. Payload carries the primary
+// rendition; Payload2/MIME2 carry the optional secondary rendition of a
+// rich-text copy (text/plain alongside text/html).
+type Clip struct {
+	Kind     string
+	MIME     string
+	MIME2    string
+	Payload  []byte
+	Payload2 []byte
+}
+
 // Entry describes one history item without its payload.
 type Entry struct {
 	ID          int64
 	Kind        string
 	MIME        string
+	MIME2       string
 	Size        int
 	SourceID    string
 	SourceName  string
 	CreatedAt   time.Time
-	TextPreview string // first bytes of text payloads; empty for images
+	TextPreview string // first bytes of the plain-text payload; empty for images
 }
 
 // Store is a SQLite backed history store.
@@ -76,6 +88,16 @@ CREATE TABLE IF NOT EXISTS history (
 		db.Close()
 		return nil, fmt.Errorf("store: create table: %w", err)
 	}
+	// Rich text needs a secondary rendition (text/plain for a text/html entry);
+	// existing databases are upgraded in place with these two columns.
+	if err := ensureColumn(db, "mime2", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: add mime2 column: %w", err)
+	}
+	if err := ensureColumn(db, "payload2", `BLOB`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: add payload2 column: %w", err)
+	}
 	if _, err := db.Exec(
 		`CREATE INDEX IF NOT EXISTS idx_history_created ON history (id DESC)`); err != nil {
 		db.Close()
@@ -87,42 +109,69 @@ CREATE TABLE IF NOT EXISTS history (
 // Close releases the database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// ensureColumn adds a column to the history table when it does not yet exist,
+// so databases created before rich-text support are upgraded transparently.
+func ensureColumn(db *sql.DB, column, ddl string) error {
+	rows, err := db.Query(`PRAGMA table_info(history)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE history ADD COLUMN ` + column + ` ` + ddl)
+	return err
+}
+
 // Add stores a clipboard item and prunes entries beyond the retention limit.
 // Duplicate filtering: when the item duplicates the most recent entry it is
 // ignored; Add then writes no row and reports stored=false. Two items count as
 // duplicates when they are the same kind and MIME and carry the same content —
-// for text that means byte-identical payloads, for images it means PNGs that
-// decode to the same picture, so re-encoding a received image (as a Windows
-// CF_DIB round-trip does) cannot smuggle a duplicate past the filter. The
-// check and the insert share one transaction, so concurrent clients cannot
-// both slip an identical payload past it.
-func (s *Store) Add(kind, mime, sourceID, sourceName string, payload []byte) (int64, bool, error) {
+// for text that means byte-identical payloads (both primary and secondary), for
+// images it means PNGs that decode to the same picture, so re-encoding a
+// received image (as a Windows CF_DIB round-trip does) cannot smuggle a
+// duplicate past the filter. The check and the insert share one transaction,
+// so concurrent clients cannot both slip an identical payload past it.
+func (s *Store) Add(clip Clip, sourceID, sourceName string) (int64, bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, false, fmt.Errorf("store: begin: %w", err)
 	}
 	defer tx.Rollback()
 
-	var lastKind, lastMIME string
-	var lastPayload []byte
+	var lastKind, lastMIME, lastMIME2 string
+	var lastPayload, lastPayload2 []byte
 	err = tx.QueryRow(
-		`SELECT kind, mime, payload FROM history ORDER BY id DESC LIMIT 1`).
-		Scan(&lastKind, &lastMIME, &lastPayload)
+		`SELECT kind, mime, mime2, payload, payload2 FROM history ORDER BY id DESC LIMIT 1`).
+		Scan(&lastKind, &lastMIME, &lastMIME2, &lastPayload, &lastPayload2)
 	switch {
 	case errors.Is(err, sql.ErrNoRows): // empty store: nothing to duplicate
 	case err != nil:
 		return 0, false, fmt.Errorf("store: last entry: %w", err)
-	case lastKind == kind && lastMIME == mime && bytes.Equal(lastPayload, payload):
+	case lastKind == clip.Kind && lastMIME == clip.MIME && lastMIME2 == clip.MIME2 &&
+		bytes.Equal(lastPayload, clip.Payload) && bytes.Equal(lastPayload2, clip.Payload2):
 		return 0, false, nil // duplicate of the latest entry, ignored
-	case kind == KindImage && lastKind == KindImage &&
-		lastMIME == mime && samePicture(lastPayload, payload):
+	case clip.Kind == KindImage && lastKind == KindImage &&
+		lastMIME == clip.MIME && samePicture(lastPayload, clip.Payload):
 		return 0, false, nil // re-encoded duplicate of the latest picture, ignored
 	}
 
 	res, err := tx.Exec(
-		`INSERT INTO history (kind, mime, payload, source_id, source_name, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		kind, mime, payload, sourceID, sourceName, time.Now().UnixMilli())
+		`INSERT INTO history (kind, mime, mime2, payload, payload2, source_id, source_name, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		clip.Kind, clip.MIME, clip.MIME2, clip.Payload, clip.Payload2, sourceID, sourceName, time.Now().UnixMilli())
 	if err != nil {
 		return 0, false, fmt.Errorf("store: insert: %w", err)
 	}
@@ -225,8 +274,11 @@ func (s *Store) Recent(limit, offset int) ([]Entry, error) {
 		limit = 500
 	}
 	rows, err := s.db.Query(`
-SELECT id, kind, mime, length(payload), source_id, source_name, created_at,
-       CASE WHEN kind = 'text' THEN substr(payload, 1, 500) ELSE '' END
+SELECT id, kind, mime, mime2, length(payload) + COALESCE(length(payload2), 0),
+       source_id, source_name, created_at,
+       CASE WHEN kind = 'text' THEN
+         substr(CASE WHEN payload2 IS NOT NULL AND length(payload2) > 0 THEN payload2 ELSE payload END, 1, 500)
+       ELSE '' END
 FROM history ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("store: recent: %w", err)
@@ -237,7 +289,7 @@ FROM history ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
 	for rows.Next() {
 		var e Entry
 		var ms int64
-		if err := rows.Scan(&e.ID, &e.Kind, &e.MIME, &e.Size, &e.SourceID,
+		if err := rows.Scan(&e.ID, &e.Kind, &e.MIME, &e.MIME2, &e.Size, &e.SourceID,
 			&e.SourceName, &ms, &e.TextPreview); err != nil {
 			return nil, fmt.Errorf("store: scan: %w", err)
 		}
@@ -247,23 +299,28 @@ FROM history ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
 	return out, rows.Err()
 }
 
-// Content returns the full payload of one entry.
-func (s *Store) Content(id int64) (Entry, []byte, error) {
+// Content returns the full content of one entry.
+func (s *Store) Content(id int64) (Entry, Clip, error) {
 	var e Entry
 	var ms int64
-	var payload []byte
+	var clip Clip
 	err := s.db.QueryRow(`
-SELECT id, kind, mime, length(payload), source_id, source_name, created_at, payload
+SELECT id, kind, mime, mime2, length(payload) + COALESCE(length(payload2), 0),
+       source_id, source_name, created_at, payload, payload2
 FROM history WHERE id = ?`, id).
-		Scan(&e.ID, &e.Kind, &e.MIME, &e.Size, &e.SourceID, &e.SourceName, &ms, &payload)
+		Scan(&e.ID, &e.Kind, &e.MIME, &e.MIME2, &e.Size, &e.SourceID, &e.SourceName,
+			&ms, &clip.Payload, &clip.Payload2)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Entry{}, nil, ErrNotFound
+		return Entry{}, Clip{}, ErrNotFound
 	}
 	if err != nil {
-		return Entry{}, nil, fmt.Errorf("store: content: %w", err)
+		return Entry{}, Clip{}, fmt.Errorf("store: content: %w", err)
 	}
 	e.CreatedAt = time.UnixMilli(ms).UTC()
-	return e, payload, nil
+	clip.Kind = e.Kind
+	clip.MIME = e.MIME
+	clip.MIME2 = e.MIME2
+	return e, clip, nil
 }
 
 // Count returns the number of stored entries.
