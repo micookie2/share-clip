@@ -166,22 +166,25 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 
 ```bash
 # 1) 在常开机器上启动 server（默认端口 9000，数据库 shareclip.db 存于当前目录）
+#    启动日志里会打印本次运行的「访问 key」，先记下来：
 ./shareclip-server
+#    访问 key（本次启动随机生成，重启后会变）: uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
 
 # 2) 每台要共享剪贴板的机器启动 client，两种方式任选：
 
 #    2a) 桌面模式（双击运行，或直接不带参数运行）：系统托盘常驻，
 #        浏览器自动打开本地设置页（默认 http://127.0.0.1:9210），
-#        第一次使用在页面里填写 server 地址即可。Windows / Linux 都如此。
+#        第一次使用在页面里填写 server 地址与上面的访问 key 即可。
 ./shareclip-client
 
-#    2b) 控制台模式（脚本、开机自启）：显式给出 server 地址，日志打在终端，
-#        不托盘、不打开页面。命令行给 -s 或加 --console 都走这条路径。
-./shareclip-client -s 192.168.1.10:9000
-./shareclip-client --console            # 地址取自桌面界面保存过的配置
+#    2b) 控制台模式（脚本、开机自启）：显式给出 server 地址与访问 key，
+#        日志打在终端，不托盘、不打开页面。命令行给 -s 或加 --console 都走这条路径。
+./shareclip-client -s 192.168.1.10:9000 -k uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
+./shareclip-client --console            # 地址与 key 取自桌面界面保存过的配置
 
-# 3) 正常复制/粘贴即可。可选：浏览器打开 http://192.168.1.10:9000/
-#    查看历史、点“推送到全部在线客户端”把某条内容重新推到所有机器。
+# 3) 正常复制/粘贴即可。可选：浏览器打开 http://192.168.1.10:9000/，
+#    首次会要求填写访问 key，之后查看历史、点“推送到全部在线客户端”把某条
+#    内容重新推到所有机器。
 ```
 
 启动参数都有单字母简写，日常用短的就够；`-h` 随时看完整说明。server 另有
@@ -195,6 +198,8 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 | `-d` | `--db` | `shareclip.db` | SQLite 历史数据库文件路径 |
 | `-l` | `--history-limit` | `500` | 历史保留条数，超出自动清理最旧 |
 | `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
+| `-k` | `--key` | 空（每次启动随机生成） | 固定访问 key；留空则启动时生成并打印到日志 |
+| — | `--no-auth` | false | 关闭访问鉴权（仅限完全可信的内网，不建议） |
 | `-q` | `--quiet` | false | 减少日志 |
 | `-v` | `--version` | — | 打印版本号与构建信息（commit、构建时间、Go 版本/平台）后退出 |
 
@@ -203,8 +208,9 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 | 简写 | 长写法 | 默认 | 说明 |
 |------|--------|------|------|
 | `-s` | `--server` | — | server 地址 `host:port`；不给 `-s` 时默认进桌面模式（地址在界面里设置），给了则默认进控制台模式（`-g`/`-c` 可改变默认） |
+| `-k` | `--key` | — | server 的访问 key（server 启动日志里打印）；server 用 `--no-auth` 时留空 |
 | `-g` | `--gui` | false | 强制桌面模式（托盘 + 本地界面），例如 `--gui -s 1.2.3.4:9000` |
-| `-c` | `--console` | false | 强制控制台模式；不带 `-s` 时使用桌面界面保存的服务器地址 |
+| `-c` | `--console` | false | 强制控制台模式；不带 `-s`/`-k` 时使用桌面界面保存的地址与 key |
 | `-n` | `--name` | 主机名 | 在其它机器/Web 页显示的机器名 |
 | `-p` | `--poll` | `1000` | 监听兜底轮询间隔毫秒：X11 默认由 XFixes 复制事件驱动，事件不可用才按此间隔；Wayland（无事件通道）按此间隔 |
 | `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
@@ -218,6 +224,33 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 `-server ...` 依旧照原样工作。`-g/--gui` 与 `-c/--console` 只是强制选择运行
 方式，不改变其它选项的写法。
 
+### 访问鉴权（key）
+
+server **默认开启鉴权**：启动时生成一个随机 key（24 字节随机数的 base64url，
+32 个字符）并打印在日志里，然后在同一进程内校验所有入口——
+
+- **客户端连接**：WebSocket 握手必须带 `X-Shareclip-Key: <key>`（agent 自动加，
+  用 `-k` 或界面里填的 key）。缺失或不对的握手直接收到 `401`，连接被拒且不会
+  进入在线列表；
+- **管理页与 REST API**：浏览器首次访问 `http://<server>:9000/` 会看到登录页，
+  填入 key 后 server 下发一个 `HttpOnly`、`SameSite=Lax` 的**会话 Cookie**
+  （令牌在内存里，不是 key 本身；进程重启即全部失效），之后页面、`/api/*` 与
+  SSE 都靠它放行。也可以用 `http://<server>:9000/?key=<key>` 一次性登入——页面
+  会立刻把 key 换成 Cookie 并从地址栏抹掉，免得 key 留在浏览历史里；
+- 脚本/curl 也可以直接带 `X-Shareclip-Key: <key>` 或 `Authorization: Bearer <key>`。
+
+几个常见选择：
+
+- **不想每次重启都换 key**：用 `-k <自定义key>` 固定（例如开机自启脚本里写死）。
+  注意命令行参数在本机进程列表里可见，共享机器上慎用；
+- **固定 key 从哪来**：`head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='`
+  之类随便生成一串即可，长度不限（最多 512 字节，且不能含换行/制表符等控制字符）；
+- **完全不要鉴权**：`--no-auth`。此时任何能访问该端口的人都能连接、查看历史；
+  server 启动日志里会打出警告。只应在完全可信的内网里显式使用。
+
+key 不落盘（server 不写 key 文件），这是「每次启动随机生成」的自然结果；
+client 侧填过的 key 会保存在它的配置文件里（见下文桌面模式设置）。
+
 ### 客户端桌面模式（托盘 + 本地界面）
 
 不带 `-s` 运行（双击即可）进入桌面模式；`-g/--gui` 可强制进入，例如
@@ -226,17 +259,18 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 - **托盘 + 浏览器页面**：托盘图标常驻，同时用系统默认浏览器打开
   `http://127.0.0.1:9210`（`--ui-addr` 可改，只监听回环；`--no-open` 则不自动
   打开浏览器）。关掉页面不影响运行。
-- **页面能做什么**：填写服务器地址、本机显示名、轮询间隔与单条上限（保存后立即
-  按新配置重连）；实时显示连接状态（当前阶段、server、重连倒计时）；实时日志
-  （SSE 推送，可清空、可自动滚动）；页脚显示配置文件与日志文件路径、托盘是否
-  可用、版本与构建信息；另有「退出客户端」按钮。
+- **页面能做什么**：填写服务器地址与访问 key、本机显示名、轮询间隔与单条上限
+  （保存后立即按新配置重连）；实时显示连接状态（当前阶段、server、重连倒计时）；
+  实时日志（SSE 推送，可清空、可自动滚动）；页脚显示配置文件与日志文件路径、
+  托盘是否可用、版本与构建信息；另有「退出客户端」按钮。
 - **托盘菜单**：一行禁用状态（如 `已连接：192.168.1.10:9000`）、`打开设置与日志`、
   `启用同步`/`暂停同步` 复选框、`退出`。暂停会断开与 server 的连接：期间本机
   复制不发送、也收不到别人的内容；恢复后立即重连。
 - **设置持久化**：Windows `%AppData%\share-clip\config.json`，Linux
-  `~/.config/share-clip/config.json`（遵循 XDG）。字段：`server`、`name`、
-  `pollMs`、`maxPayload`。桌面模式还在同目录写日志文件 `client.log`，超过 2 MiB
-  轮转为 `client.log.old`——托盘模式没有可见控制台，这个文件就是现场记录。
+  `~/.config/share-clip/config.json`（遵循 XDG）。字段：`server`、`key`、
+  `name`、`pollMs`、`maxPayload`。桌面模式还在同目录写日志文件 `client.log`，
+  超过 2 MiB 轮转为 `client.log.old`——托盘模式没有可见控制台，这个文件就是
+  现场记录。
 - **单实例**：再次双击时会先探测固定端口 `127.0.0.1:9210` 上是否已有 share-clip
   客户端在跑，有就只把它的页面重新打开，不再起第二个进程；该端口被别的程序占用
   时本地界面会自动退到随机端口（日志里有提示），此时再次双击会起第二个进程。
@@ -289,6 +323,11 @@ shareclip-server uninstall --user --purge
   --exec-arg=-l --exec-arg=1000`，等价的单元行是
   `ExecStart=…/shareclip-server -a :9000 -d … -l 500 -m 33554432 -q -l 1000`
   （重复的标量参数后者生效，所以这样也能覆盖前面的默认值）。
+- **鉴权**：默认开启，key 每次启动随机生成并写进 journal——
+  `journalctl -u share-clip -f | grep 访问 key` 就能看到（用户级加 `--user`）。
+  想固定 key（脚本、开机自启方便）用 `--exec-arg=-k --exec-arg=<你的key>`；
+  想彻底关闭用 `--no-auth`。注意 key 写在 `ExecStart` 里时单元文件是 0644，
+  同机其他用户可见，共享机器上别这么做。
 - 想改的不只是启动参数（环境变量、资源限制、依赖关系等）时，用 systemd 原生的
   覆盖，不必改单元文件本身：`sudo systemctl edit share-clip` 会生成
   `/etc/systemd/system/share-clip.service.d/override.conf`，在里面写
@@ -319,6 +358,7 @@ shareclip-server uninstall --user --purge
 | `-u` | `--user` | false | 安装为用户级服务（`~/.config/systemd/user`，无需 root） |
 | `-n` | `--name` | `share-clip` | 单元名（不含 `.service`） |
 | — | `--run-as` | 空（`DynamicUser=yes`） | 系统级服务以该用户运行；用户级会忽略此选项 |
+| — | `--no-auth` | false | 写进 `ExecStart`：关闭 server 的访问鉴权 |
 | — | `--exec-arg` | 空 | 追加到 `ExecStart` 的额外启动参数，可重复（如 `--exec-arg=-q`）；服务器将来新增的参数也走这里，后出现的标量参数会覆盖前面的 |
 | — | `--unit-dir` | 按作用域 | 覆盖单元文件目录 |
 | — | `--no-start` | false | 只 enable，不立即启动 |
@@ -337,7 +377,11 @@ shareclip-server uninstall --user --purge
 
 ## Web 页面（server 管理页）
 
-`http://<server>:9000/`（默认监听全部网卡，内网可访问）：
+`http://<server>:9000/`（默认监听全部网卡，内网可访问）。**首次打开会要求填写
+访问 key**（server 启动日志里打印的那串；也可以用
+`http://<server>:9000/?key=<key>` 一次性登入）。登录后 server 下发一个会话
+Cookie，页面与它的所有接口都靠它放行（页面上的「退出」按钮会注销会话并回到
+登录页，共享电脑上离开时用）。之后的功能有：
 
 - **实时自动刷新**：页面通过 Server-Sent Events（`/api/events`）与服务端保持
   长连接——任何客户端复制新内容都会即时出现在列表顶部（新记录以短暂高亮标出），
@@ -356,7 +400,9 @@ shareclip-server uninstall --user --purge
 
 相关接口：`GET /api/status`（在线节点快照 JSON）、`GET /api/version`（版本号、
 commit、构建时间、Go 版本/平台）、`GET /api/events`（SSE 事件流：`status` /
-`clip` / `cleared`）。
+`clip` / `cleared`），以及登录用的 `POST /api/login` 与 `POST /api/logout`。
+除 `GET /login`、`POST /api/login`、`POST /api/logout` 外，所有端点都要求
+访问 key 或会话 Cookie（见「访问鉴权（key）」）。
 
 ## 代码结构
 
@@ -366,6 +412,7 @@ cmd/shareclip-server/   server 入口（含 install / uninstall 子命令）
 cmd/shareclip-client/   client 入口：选择控制台/桌面模式，串联托盘、本地界面与 agent
 internal/agent/         client 主逻辑：监听剪切板、收发、自动重连（含连接状态回调）
 internal/appconfig/     client 持久化设置：config.json 路径、默认值、读写、地址规范化
+internal/auth/          访问 key 生成/校验（恒定时间比较）+ 管理页会话令牌（内存）
 internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语义）
   clipboard_windows.go  Win32：CF_UNICODETEXT / CF_HTML / CF_DIB（stdlib syscall）
   clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+图优先+富文本+多格式转 PNG

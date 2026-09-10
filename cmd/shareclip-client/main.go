@@ -42,6 +42,7 @@ func main() {
 	fs := cli.New("shareclip-client")
 	var (
 		serverAddr = fs.String("s", "server", "", "share-clip server 地址，如 192.168.1.10:9000；不带参数双击运行时在界面里设置")
+		key        = fs.String("k", "key", "", "server 的访问 key（server 启动日志里打印；server 用 --no-auth 时留空）")
 		name       = fs.String("n", "name", "", "本机显示名（默认使用主机名）")
 		pollMs     = fs.Int("p", "poll", appconfig.DefaultPollMs, "剪贴板监听兜底轮询间隔（毫秒）：X11 默认由 XFixes 复制事件驱动，仅事件不可用时按此轮询；Wayland/GNOME 等无事件通道的平台按此轮询")
 		maxPayload = fs.Int("m", "max-payload", protocol.DefaultMaxPayload, "单条剪贴板内容最大字节数")
@@ -54,12 +55,15 @@ func main() {
 	)
 	fs.SetIntro(fmt.Sprintf(`share-clip client %s
 用法: shareclip-client                      # 双击运行：托盘常驻 + 本地设置/日志界面
-     shareclip-client -s 192.168.1.10:9000  # 控制台模式（不托盘），适合脚本/开机自启
-     shareclip-client --console             # 控制台模式，服务器地址取自保存的配置
+     shareclip-client -s 192.168.1.10:9000 -k <访问key>   # 控制台模式，适合脚本/开机自启
+     shareclip-client --console             # 控制台模式，服务器地址与 key 取自保存的配置
 
 没给 -s 时进入桌面模式：图标常驻系统托盘，同时用浏览器打开本地界面
-（默认 %s），在那里配置服务器地址、查看实时日志。关掉浏览器页面
+（默认 %s），在那里配置服务器地址、访问 key、查看实时日志。关掉浏览器页面
 不影响运行；退出请用托盘菜单或界面上的「退出客户端」。
+
+server 默认每次启动会生成一个访问 key 并打印在它的日志里：本机要连上它，
+必须用 -k 或在界面里填同一个 key（server 以 --no-auth 启动时才不需要）。
 
 启动后本机每次复制文本或图片都会广播到 server 上的其它客户端；
 收到的广播会自动写入本机剪贴板。文件复制暂不支持，会被忽略。
@@ -79,6 +83,7 @@ func main() {
 	if desktop {
 		err := runDesktop(ctx, build, desktopFlags{
 			Server:     *serverAddr,
+			Key:        *key,
 			Name:       *name,
 			PollMs:     *pollMs,
 			MaxPayload: *maxPayload,
@@ -86,6 +91,7 @@ func main() {
 			UIAddr:     *uiAddr,
 			NoOpen:     *noOpen,
 			ServerSet:  fs.Changed("s", "server"),
+			KeySet:     fs.Changed("k", "key"),
 			PollSet:    fs.Changed("p", "poll"),
 			MaxSet:     fs.Changed("m", "max-payload"),
 		})
@@ -94,13 +100,14 @@ func main() {
 		}
 		return
 	}
-	if err := runConsole(ctx, build, *serverAddr, *name, *pollMs, *maxPayload, *quiet); err != nil {
+	if err := runConsole(ctx, build, *serverAddr, *key, *name, *pollMs, *maxPayload, *quiet); err != nil {
 		logx.Fatalf("client 退出: %v", err)
 	}
 }
 
 type desktopFlags struct {
 	Server     string
+	Key        string
 	Name       string
 	PollMs     int
 	MaxPayload int
@@ -108,6 +115,7 @@ type desktopFlags struct {
 	UIAddr     string
 	NoOpen     bool
 	ServerSet  bool // 命令行是否显式给了 -s，是则覆盖已保存的配置
+	KeySet     bool // 命令行是否显式给了 -k
 	PollSet    bool
 	MaxSet     bool
 }
@@ -191,6 +199,9 @@ func runDesktop(parent context.Context, build buildinfo.Info, f desktopFlags) er
 
 	logx.Printf("share-clip client %s（%s）已启动，server: %s（commit %s，构建于 %s）",
 		build.Version, svc.DisplayName(), displayServer(cfg.Server), build.Commit, build.BuiltLocal())
+	if cfg.Key == "" {
+		logx.Printf("[client] 未配置访问 key：server 默认开启鉴权，连不上时请在界面里填写它打印的 key")
+	}
 	logx.Printf("[client] 本地界面: %s（日志文件: %s）", url, displayServer(logPath))
 	if !f.NoOpen {
 		if err := clientui.OpenBrowser(url); err != nil {
@@ -292,6 +303,9 @@ func applyFlagOverrides(cfg appconfig.Config, f desktopFlags) appconfig.Config {
 			cfg.Server = addr
 		}
 	}
+	if f.KeySet {
+		cfg.Key = strings.TrimSpace(f.Key)
+	}
 	if strings.TrimSpace(f.Name) != "" {
 		cfg.Name = strings.TrimSpace(f.Name)
 	}
@@ -305,14 +319,24 @@ func applyFlagOverrides(cfg appconfig.Config, f desktopFlags) appconfig.Config {
 }
 
 // runConsole 是原来的命令行运行方式：不托盘、不开界面，日志直接打到终端。
-// 没给 -s 时回退到桌面模式保存下来的配置，这样开机自启脚本可以只写
+// 没给 -s/-k 时回退到桌面模式保存下来的配置，这样开机自启脚本可以只写
 // `shareclip-client --console`。
-func runConsole(ctx context.Context, build buildinfo.Info, serverAddr, name string, pollMs, maxPayload int, quiet bool) error {
+func runConsole(ctx context.Context, build buildinfo.Info, serverAddr, key, name string, pollMs, maxPayload int, quiet bool) error {
+	// 命令行没给的项一律回退到桌面界面保存过的配置；读不到就用零值。
+	saved, err := appconfig.Load()
+	if err != nil {
+		logx.Printf("[client] 读取配置失败，只用命令行参数: %v", err)
+	}
 	if serverAddr == "" {
-		cfg, err := appconfig.Load()
-		if err == nil && cfg.Server != "" {
-			serverAddr = cfg.Server
+		serverAddr = saved.Server
+		if serverAddr != "" {
 			logx.Printf("[client] 使用配置文件中保存的 server 地址: %s", serverAddr)
+		}
+	}
+	if strings.TrimSpace(key) == "" {
+		key = saved.Key
+		if key != "" {
+			logx.Printf("[client] 使用配置文件中保存的访问 key")
 		}
 	}
 	if serverAddr == "" {
@@ -321,6 +345,10 @@ func runConsole(ctx context.Context, build buildinfo.Info, serverAddr, name stri
 	addr, err := appconfig.NormalizeServer(serverAddr)
 	if err != nil {
 		return err
+	}
+	key = strings.TrimSpace(key)
+	if strings.ContainsFunc(key, appconfig.IsControl) {
+		return errors.New("访问 key 含有控制字符（如换行、制表符），请检查是否复制完整")
 	}
 
 	host, err := os.Hostname()
@@ -334,6 +362,7 @@ func runConsole(ctx context.Context, build buildinfo.Info, serverAddr, name stri
 
 	cfg := agent.Config{
 		ServerAddr:     addr,
+		Key:            key,
 		ClientID:       fmt.Sprintf("%s-%d-%s", host, os.Getpid(), randHex(4)),
 		Name:           displayName,
 		PollIntervalMs: pollMs,
@@ -341,9 +370,18 @@ func runConsole(ctx context.Context, build buildinfo.Info, serverAddr, name stri
 		Quiet:          quiet,
 	}
 
-	logx.Printf("share-clip client %s（%s）启动，server: %s（commit %s，构建于 %s）",
-		build.Version, displayName, addr, build.Commit, build.BuiltLocal())
+	logx.Printf("share-clip client %s（%s）启动，server: %s，访问 key: %s（commit %s，构建于 %s）",
+		build.Version, displayName, addr, keyState(key), build.Commit, build.BuiltLocal())
 	return agent.Run(ctx, cfg)
+}
+
+// keyState 把「有没有 key」压成日志里的一段文字。key 本身不打印：终端里的
+// 日志可能被转发、截图，没必要把口令再抄一遍。
+func keyState(key string) string {
+	if key == "" {
+		return "未配置（server 关闭鉴权时才可连接）"
+	}
+	return "已配置"
 }
 
 // displayServer 在日志里给空值一个明确的说法：桌面模式首次启动时确实还没有

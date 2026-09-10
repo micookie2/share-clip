@@ -23,6 +23,8 @@ import (
 	"github.com/micookie2/share-clip/internal/server"
 )
 
+// startServer 起一个不做鉴权的 server：本文件里的用例都在验证剪贴板与历史
+// 行为，鉴权会挡在它们前面。鉴权本身由 auth_test.go 单独覆盖。
 func startServer(t *testing.T) *server.Server {
 	t.Helper()
 	s, err := server.New(server.Config{
@@ -30,6 +32,7 @@ func startServer(t *testing.T) *server.Server {
 		DBPath:       filepath.Join(t.TempDir(), "history.db"),
 		HistoryLimit: 500,
 		MaxPayload:   32 << 20,
+		NoAuth:       true,
 		Quiet:        true,
 	})
 	if err != nil {

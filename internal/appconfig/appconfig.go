@@ -40,6 +40,7 @@ const (
 // Config 是 client 桌面模式的全部持久化设置。
 type Config struct {
 	Server     string `json:"server"`               // server 地址 host:port
+	Key        string `json:"key,omitempty"`        // server 的访问 key；server 用 --no-auth 时留空
 	Name       string `json:"name,omitempty"`       // 本机显示名，空表示用主机名
 	PollMs     int    `json:"pollMs,omitempty"`     // 剪贴板兜底轮询间隔（毫秒）
 	MaxPayload int    `json:"maxPayload,omitempty"` // 单条内容最大字节数
@@ -57,6 +58,7 @@ func Default() Config {
 // 文件也能正常使用。
 func (c Config) WithDefaults() Config {
 	c.Server = strings.TrimSpace(c.Server)
+	c.Key = strings.TrimSpace(c.Key)
 	c.Name = strings.TrimSpace(c.Name)
 	if c.PollMs <= 0 {
 		c.PollMs = DefaultPollMs
@@ -228,6 +230,14 @@ func Validate(c Config) error {
 	if _, err := NormalizeServer(c.Server); err != nil {
 		return err
 	}
+	// key 会原样进 WebSocket 握手请求头，控制字符会让请求直接失败（甚至被
+	// 用来注入额外的头），所以在保存前就挡掉。
+	if strings.ContainsFunc(c.Key, IsControl) {
+		return errors.New("访问 key 含有控制字符（如换行、制表符），请检查是否复制完整")
+	}
+	if len(c.Key) > maxKeyLen {
+		return fmt.Errorf("访问 key 过长（%d 字节，最多 %d）", len(c.Key), maxKeyLen)
+	}
 	if c.PollMs != 0 && c.PollMs < 50 {
 		return errors.New("轮询间隔不能小于 50 毫秒")
 	}
@@ -236,6 +246,14 @@ func Validate(c Config) error {
 	}
 	return nil
 }
+
+// maxKeyLen 是访问 key 允许的最大长度：随机生成的 key 只有 32 个字符，这里
+// 留足余量，同时避免把超长字符串塞进请求头。
+const maxKeyLen = 512
+
+// IsControl 判断字符是否是不能出现在 HTTP 请求头里的控制字符。访问 key 会被
+// 原样放进 WebSocket 握手请求头，读写两端都用它把关。
+func IsControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
 // Normalized 返回把 server 地址整理过、其余字段补齐默认值之后的配置，供真正
 // 拿去连接前使用。

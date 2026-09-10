@@ -32,6 +32,9 @@ const installIntro = `share-clip server 安装为 systemd 服务
 启动参数：-a/-d/-l/-m 就是写进单元 ExecStart 的服务器参数；服务器上
 其它参数（以及将来新增的参数）用可重复的 --exec-arg 追加，例如：
   shareclip-server install --exec-arg=-q
+鉴权默认开启，key 每次启动随机生成并写进 journal（用下面的 journalctl
+命令查看，搜「访问 key」）；要固定 key 用 --exec-arg=-k --exec-arg=<key>，
+要彻底关闭鉴权用 --no-auth。
 需要更复杂的改动（环境变量、资源限制等）时，用 systemd 原生的覆盖：
   sudo systemctl edit <单元名>   # 写 [Service] 段，改 ExecStart 前先写一行空的 ExecStart=
 
@@ -75,6 +78,8 @@ func runServer() {
 		dbPath       = fs.String("d", "db", server.DefaultDBPath, "SQLite 数据库文件路径（当前目录下）")
 		historyLimit = fs.Int("l", "history-limit", server.DefaultHistory, "历史记录保留条数（超出自动清理最旧）")
 		maxPayload   = fs.Int("m", "max-payload", protocol.DefaultMaxPayload, "单条剪贴板内容最大字节数")
+		key          = fs.String("k", "key", "", "固定访问 key；留空则每次启动随机生成并打印到日志")
+		noAuth       = fs.Bool("", "no-auth", false, "关闭访问鉴权（仅限完全可信的内网，不建议）")
 		quiet        = fs.Bool("q", "quiet", false, "减少日志输出")
 		showVersion  = fs.Bool("v", "version", false, "显示版本号与构建信息后退出")
 	)
@@ -84,6 +89,10 @@ func runServer() {
 
 WebSocket 端点: ws://<host>%s/ws
 Web 管理页:     http://<host>%s/
+
+鉴权: 默认每次启动随机生成一个访问 key 并打印在下面几行日志里。
+客户端要用同一个 key 才能连接，浏览器首次打开管理页会要求填写它。
+若要在内网固定 key（便于脚本/开机自启），用 -k 指定；完全不要鉴权用 --no-auth。
 每个选项都有等价的长写法（-a 即 --addr），见下面的列表。
 
 子命令:
@@ -102,6 +111,8 @@ Web 管理页:     http://<host>%s/
 		DBPath:       *dbPath,
 		HistoryLimit: *historyLimit,
 		MaxPayload:   *maxPayload,
+		Key:          *key,
+		NoAuth:       *noAuth,
 		Quiet:        *quiet,
 	})
 	if err != nil {
@@ -113,10 +124,26 @@ Web 管理页:     http://<host>%s/
 	logx.Printf("share-clip server %s 启动（commit %s，构建于 %s）",
 		build.Version, build.Commit, build.BuiltLocal())
 	logx.Printf("历史数据库: %s（保留最近 %d 条）", *dbPath, *historyLimit)
+	printAuthInfo(s, *noAuth, *addr)
 	if err := s.ListenAndServe(ctx); err != nil {
 		logx.Fatalf("server 退出: %v", err)
 	}
 	logx.Printf("server 已停止")
+}
+
+// printAuthInfo 在启动日志里把访问 key 明确打出来——这是用户拿到 key 的唯一
+// 正常途径（server 不落盘、界面也要先有 key 才能进）。
+func printAuthInfo(s *server.Server, noAuth bool, addr string) {
+	if noAuth {
+		logx.Printf("警告: 已用 --no-auth 关闭鉴权，任何能访问该端口的人都能连接、查看历史")
+		return
+	}
+	if s.KeyGenerated() {
+		logx.Printf("访问 key（本次启动随机生成，重启后会变）: %s", s.AccessKey())
+	} else {
+		logx.Printf("访问 key（由 --key 指定）: %s", s.AccessKey())
+	}
+	logx.Printf("客户端连接与管理页都需要这个 key；浏览器首次打开 http://<host>%s/ 会要求填写", addr)
 }
 
 // runInstall 处理 `shareclip-server install [选项]`。
@@ -130,6 +157,7 @@ func runInstall(args []string) {
 		user         = fs.Bool("u", "user", false, "安装为用户级服务（~/.config/systemd/user，无需 root）")
 		name         = fs.String("n", "name", systemd.DefaultUnitName(), "单元名（不含 .service）")
 		runAs        = fs.String("", "run-as", "", "系统级服务以该用户运行；留空则 DynamicUser=yes")
+		noAuth       = fs.Bool("", "no-auth", false, "写进单元的 ExecStart：关闭 server 的访问鉴权")
 		extraArgs    = fs.Strings("", "exec-arg", "追加到 ExecStart 的额外启动参数，如 --exec-arg=-q")
 		unitDir      = fs.String("", "unit-dir", "", "覆盖单元文件目录（默认按作用域）")
 		noStart      = fs.Bool("", "no-start", false, "只 enable，不立即启动")
@@ -147,6 +175,7 @@ func runInstall(args []string) {
 		HistoryLimit: *historyLimit,
 		MaxPayload:   *maxPayload,
 		RunAs:        *runAs,
+		NoAuth:       *noAuth,
 		ExtraArgs:    *extraArgs,
 		UnitDir:      *unitDir,
 		NoStart:      *noStart,

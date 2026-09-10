@@ -307,6 +307,10 @@ pre.full.show { display: block; }
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
       清空
     </button>
+    <button class="btn" onclick="logout()" title="退出管理页（清除本机会话 Cookie）">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+      退出
+    </button>
   </div>
 </header>
 
@@ -612,6 +616,13 @@ async function clearAll() {
   } catch (e) { toast("清空失败: " + e, "err"); }
 }
 
+// 退出管理页：让服务端注销会话 Cookie，再回到登录页。key 本身不变，
+// 只是本机浏览器不再持有凭据（共享电脑上离开时用）。
+async function logout() {
+  try { await fetch("/api/logout", { method: "POST" }); } catch (e) { /* 照样回登录页 */ }
+  location.replace("/");
+}
+
 /* ---------------- build info ---------------- */
 
 // 版本号与构建时间在编译期注入（见 Makefile），页面启动时取一次就固定。
@@ -684,6 +695,20 @@ function renderStatus(st) {
   }
 }
 
+/* refreshStatus 主动拉一次在线节点快照。
+   节点数本来只靠 SSE 的 status 事件更新；长连接一旦被中间设备悄悄掐断（页面
+   这边不一定马上收到 error），或初始那一帧丢了，节点数就会一直停在旧值，只能
+   刷新页面。定时对齐一次，界面永远收敛到真实状态。 */
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    // 会话失效（典型场景：server 重启后 key 变了，旧 Cookie 作废）：回登录页。
+    if (r.status === 401) { location.replace("/"); return; }
+    if (!r.ok) return;
+    renderStatus(await r.json());
+  } catch (e) { /* 网络抖动：下一次定时再试 */ }
+}
+
 function setConn(state) {   // open | retry | down
   const c = $("conn");
   c.classList.remove("retry", "down");
@@ -698,12 +723,15 @@ function connect() {
   es = new EventSource("/api/events");
   es.onopen = () => {
     setConn("open");
+    refreshStatus();                     // 对齐在线节点数，衔接断线期间的变化
     if (!firstOpen) syncLatest();        // reconnect: catch up missed clips
     firstOpen = false;
   };
   es.onerror = () => {
     if (!es) return;
     setConn(es.readyState === EventSource.CONNECTING ? "retry" : "down");
+    // SSE 断了但页面还活着：探一下状态，顺便发现会话失效。
+    refreshStatus();
   };
   es.addEventListener("status", e => {
     try { renderStatus(JSON.parse(e.data)); } catch (_) {}
@@ -726,8 +754,10 @@ function connect() {
 
 fullRefresh();
 loadBuildInfo();
+refreshStatus();
 connect();
-setInterval(syncLatest, 30000);          // low-frequency safety net
+// 低频兜底：SSE 一条通知都没送到时，历史与在线节点数也会自己对齐。
+setInterval(() => { syncLatest(); refreshStatus(); }, 30000);
 </script>
 </body>
 </html>

@@ -356,6 +356,7 @@ func (s *Server) writeEvent(w io.Writer, ev clientsvc.Event) error {
 func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Server     string `json:"server"`
+		Key        string `json:"key"`
 		Name       string `json:"name"`
 		PollMs     int    `json:"pollMs"`
 		MaxPayload int    `json:"maxPayload"`
@@ -365,6 +366,7 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := appconfig.Config{
 		Server:     body.Server,
+		Key:        body.Key,
 		Name:       body.Name,
 		PollMs:     body.PollMs,
 		MaxPayload: body.MaxPayload,

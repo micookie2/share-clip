@@ -65,6 +65,7 @@ type Options struct {
 	HistoryLimit int      // server -l 的值
 	MaxPayload   int      // server -m 的值
 	RunAs        string   // 非空 => User=<RunAs>；空 => DynamicUser=yes（仅系统级）
+	NoAuth       bool     // 追加 --no-auth：关闭 server 的访问鉴权
 	ExtraArgs    []string // 追加到 ExecStart 末尾的额外参数（如 -q），逐个加引号
 	UnitDir      string   // 覆盖单元目录（测试用）
 	NoStart      bool     // 只 enable，不立即启动
@@ -359,6 +360,11 @@ func execStart(o Options) string {
 		"-d", unitDBPath(o),
 		"-l", strconv.Itoa(historyLimit(o)),
 		"-m", strconv.Itoa(maxPayload(o)),
+	}
+	if o.NoAuth {
+		// 写在固定参数之后、ExtraArgs 之前：Go 的 flag 包对重复标量选项「后者
+		// 生效」，所以用户仍可用 --exec-arg 覆盖上面任何一项，包括这一项。
+		args = append(args, "--no-auth")
 	}
 	for _, extra := range o.ExtraArgs {
 		// 走 escapePercent + quoteArg：换行会被转义成 \n 留在引号内，注入不了

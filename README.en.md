@@ -187,25 +187,28 @@ and the build instant then fall back to the VCS stamps Go embeds automatically
 ## Usage
 
 ```bash
-# 1) start the server on the always-on box (port 9000, shareclip.db in cwd)
+# 1) start the server on the always-on box (port 9000, shareclip.db in cwd).
+#    The startup log prints this run's access key — write it down:
 ./shareclip-server
+#    access key (random per start, changes on restart): uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
 
 # 2) start a client on every machine that should share its clipboard, either way:
 
 #    2a) desktop mode (double-click, or just run it with no arguments): the tray
 #        icon stays resident and the local settings page opens in your browser
-#        (default http://127.0.0.1:9210). Fill in the server address there the
-#        first time. Same on Windows and Linux.
+#        (default http://127.0.0.1:9210). Fill in the server address and the
+#        access key there the first time. Same on Windows and Linux.
 ./shareclip-client
 
-#    2b) console mode (scripts, autostart): pass the server address explicitly;
-#        logs go to the terminal, no tray, no page. Passing -s or --console both
-#        take this path.
-./shareclip-client -s 192.168.1.10:9000
-./shareclip-client --console            # address comes from the saved desktop config
+#    2b) console mode (scripts, autostart): pass the server address and access key
+#        explicitly; logs go to the terminal, no tray, no page. Passing -s or
+#        --console both take this path.
+./shareclip-client -s 192.168.1.10:9000 -k uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
+./shareclip-client --console            # address and key come from the saved config
 
-# 3) just copy and paste as usual. Optionally open http://192.168.1.10:9000/
-#    to browse history and re-push an entry to all online clients.
+# 3) just copy and paste as usual. Optionally open http://192.168.1.10:9000/ —
+#    it asks for the access key once, then lets you browse history and re-push an
+#    entry to all online clients.
 ```
 
 Every option has a single-letter short form, and `-h` prints the full list. The
@@ -220,6 +223,8 @@ systemd service" below).
 | `-d` | `--db` | `shareclip.db` | SQLite history database path |
 | `-l` | `--history-limit` | `500` | how many history entries to keep |
 | `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry |
+| `-k` | `--key` | empty (random per start) | fixed access key; when empty one is generated at startup and logged |
+| — | `--no-auth` | false | disable access authentication (trusted LAN only, not recommended) |
 | `-q` | `--quiet` | false | less logging |
 | `-v` | `--version` | — | print version and build metadata (commit, build time, Go/platform) and exit |
 
@@ -228,8 +233,9 @@ systemd service" below).
 | Short | Long | Default | Description |
 |-------|------|---------|-------------|
 | `-s` | `--server` | — | server address `host:port`; omitting `-s` defaults to desktop mode (set the address in the UI), giving it defaults to console mode (`-g`/`-c` override the default) |
+| `-k` | `--key` | — | access key printed by the server at startup; leave empty when the server runs `--no-auth` |
 | `-g` | `--gui` | false | force desktop mode (tray + local UI), e.g. `--gui -s 1.2.3.4:9000` |
-| `-c` | `--console` | false | force console mode; without `-s` it reuses the server address saved by the desktop UI |
+| `-c` | `--console` | false | force console mode; without `-s`/`-k` it reuses the address and key saved by the desktop UI |
 | `-n` | `--name` | hostname | machine name shown elsewhere |
 | `-p` | `--poll` | `1000` | fallback monitoring interval in ms: X11 is event driven (XFixes) and only polls when events are unavailable; Wayland (no event channel) polls at this interval |
 | `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry |
@@ -243,6 +249,43 @@ work; values can be `-s host:port` or `-s=host:port`), so existing autostart
 entries keep working unchanged. `-g/--gui` and `-c/--console` only force the run
 mode and change nothing about how the other options are written.
 
+### Access authentication (key)
+
+The server **requires authentication by default**: at startup it generates a
+random key (24 random bytes, base64url, 32 characters) and prints it to the log,
+then checks every entry point within the same process:
+
+- **Client connections**: the WebSocket handshake must carry
+  `X-Shareclip-Key: <key>` (the agent adds it automatically from the key you set
+  with `-k` or in the UI). A missing or wrong key gets a `401` and never joins
+  the online roster;
+- **Admin page and REST API**: the browser sees a login page on its first visit
+  to `http://<server>:9000/`. After the key is accepted the server issues an
+  `HttpOnly`, `SameSite=Lax` **session cookie** (the token lives in memory and is
+  not the key itself; it dies with the process), which then authorises the page,
+  `/api/*` and SSE. You can also log in with
+  `http://<server>:9000/?key=<key>` — the page immediately swaps the key for the
+  cookie and strips it from the address bar so it does not sit in browser
+  history;
+- Scripts and curl can send `X-Shareclip-Key: <key>` or
+  `Authorization: Bearer <key>` directly.
+
+Common choices:
+
+- **Keep the same key across restarts**: pass `-k <your-key>`. Note that command
+  line arguments are visible in the process list, so avoid this on shared
+  machines;
+- **Where to get a fixed key**: anything random works, e.g.
+  `head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='` (up to 512 bytes,
+  no control characters such as newlines or tabs);
+- **No authentication at all**: `--no-auth`. Anyone who can reach the port can
+  connect and read history; the server logs a warning at startup. Only use this
+  on a fully trusted LAN.
+
+The key is never written to disk by the server (a natural consequence of
+generating it per start); on the client side the key you enter is stored in its
+config file (see desktop mode below).
+
 ### Desktop mode (tray + local UI)
 
 Running without `-s` (double-click works) enters desktop mode; `-g/--gui` forces
@@ -253,22 +296,22 @@ line win over the saved config).
   in your default browser at `http://127.0.0.1:9210` (`--ui-addr` changes it; it
   listens on loopback only, and `--no-open` skips opening the browser). Closing
   the page does not stop syncing.
-- **What the page does**: edit the server address, machine name, poll interval
-  and payload cap (saving applies the new settings and reconnects immediately);
-  show live connection status (phase, current server, reconnect countdown) and
-  live logs (pushed over SSE, clearable, auto-scroll); the footer shows the
-  config and log file paths, whether the tray is available and the version/build
-  metadata, plus a "quit client" button.
+- **What the page does**: edit the server address and access key, machine name,
+  poll interval and payload cap (saving applies the new settings and reconnects
+  immediately); show live connection status (phase, current server, reconnect
+  countdown) and live logs (pushed over SSE, clearable, auto-scroll); the footer
+  shows the config and log file paths, whether the tray is available and the
+  version/build metadata, plus a "quit client" button.
 - **Tray menu**: a disabled status line (e.g. `已连接：192.168.1.10:9000`,
   "connected"), `打开设置与日志` (open settings and logs), an
   `启用同步`/`暂停同步` (enable/pause sync) checkbox, and `退出` (quit). Pausing
   disconnects from the server: nothing is sent or received while paused, and
   resuming reconnects immediately.
 - **Persisted settings**: Windows `%AppData%\share-clip\config.json`, Linux
-  `~/.config/share-clip/config.json` (XDG). Fields: `server`, `name`, `pollMs`,
-  `maxPayload`. Desktop mode also writes a log file `client.log` next to it,
-  rotated to `client.log.old` at 2 MiB — a tray app has no visible console, so
-  this file is the on-disk record.
+  `~/.config/share-clip/config.json` (XDG). Fields: `server`, `key`, `name`,
+  `pollMs`, `maxPayload`. Desktop mode also writes a log file `client.log` next
+  to it, rotated to `client.log.old` at 2 MiB — a tray app has no visible
+  console, so this file is the on-disk record.
 - **Single instance**: a second double-click first probes the fixed port
   `127.0.0.1:9210` for a running share-clip client and just re-opens its page
   instead of starting a second process; if something else holds that port the UI
@@ -330,6 +373,12 @@ shareclip-server uninstall --user --purge
   `ExecStart=…/shareclip-server -a :9000 -d … -l 500 -m 33554432 -q -l 1000`
   (a repeated scalar flag wins, so this also overrides the defaults written
   before it).
+- **Authentication**: on by default. The key is random per start and goes to the
+  journal — `journalctl -u share-clip -f | grep '访问 key'` (add `--user` for the
+  user scope). To pin a key (handy for scripts and autostart) use
+  `--exec-arg=-k --exec-arg=<your-key>`; to disable auth entirely use
+  `--no-auth`. Note that a key written into `ExecStart` lives in a 0644 unit
+  file that other local users can read, so avoid it on shared machines.
 - To change more than the startup arguments (environment variables, resource
   limits, dependencies, …), use systemd's own override instead of editing the
   unit file: `sudo systemctl edit share-clip` creates
@@ -364,6 +413,7 @@ first, then `sudo install -m755 bin/shareclip-server /usr/local/bin/`, and run
 | `-u` | `--user` | false | install a user service (`~/.config/systemd/user`, no root) |
 | `-n` | `--name` | `share-clip` | unit name (without `.service`) |
 | — | `--run-as` | empty (`DynamicUser=yes`) | run the system service as that user; ignored for the user scope |
+| — | `--no-auth` | false | write `--no-auth` into `ExecStart`: disable server access authentication |
 | — | `--exec-arg` | empty | extra startup arguments appended to `ExecStart`, repeatable (e.g. `--exec-arg=-q`); future server flags go here too, and a repeated scalar flag wins over an earlier one |
 | — | `--unit-dir` | by scope | override the unit file directory |
 | — | `--no-start` | false | enable only, do not start now |
@@ -382,7 +432,12 @@ first, then `sudo install -m755 bin/shareclip-server /usr/local/bin/`, and run
 
 ## Web UI (server admin page)
 
-`http://<server>:9000/` (listens on all interfaces by default):
+`http://<server>:9000/` (listens on all interfaces by default). **The first visit
+asks for the access key** printed in the server startup log; alternatively open
+`http://<server>:9000/?key=<key>` to log in in one step. After that the server
+issues a session cookie that authorises the page and all of its APIs (the
+"退出" / log-out button in the header revokes it and returns to the login page —
+useful when leaving a shared machine). What the page offers:
 
 - **Live updates**: the page holds a Server-Sent Events connection
   (`/api/events`) — new copies appear at the top instantly (briefly highlighted),
@@ -405,7 +460,10 @@ first, then `sudo install -m755 bin/shareclip-server /usr/local/bin/`, and run
 
 APIs: `GET /api/status` (online node snapshot), `GET /api/version` (version,
 commit, build time, Go version/platform), `GET /api/events` (SSE stream of
-`status` / `clip` / `cleared`).
+`status` / `clip` / `cleared`), plus `POST /api/login` and `POST /api/logout` for
+the admin page. Every endpoint except `GET /login`, `POST /api/login` and
+`POST /api/logout` requires the access key or a session cookie (see "Access
+authentication (key)").
 
 ## Layout
 
@@ -419,6 +477,8 @@ internal/agent/         client logic: clipboard watch, send/receive, reconnect
                         (including connection-status callbacks)
 internal/appconfig/     client persisted settings: config.json path, defaults,
                         load/save, server-address normalisation
+internal/auth/          access-key generation/check (constant time) and in-memory
+                        session tokens for the admin page
 internal/clipboard/     cross-platform clipboard abstraction + watcher
   clipboard_windows.go  Win32: CF_UNICODETEXT / CF_HTML / CF_DIB (stdlib syscall)
   clipboard_linux.go    Linux: xclip / wl-clipboard; format listing, image

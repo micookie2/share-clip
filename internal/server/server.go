@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/micookie2/share-clip/assets"
+	"github.com/micookie2/share-clip/internal/auth"
 	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
 	"github.com/micookie2/share-clip/internal/store"
@@ -29,6 +31,13 @@ type Config struct {
 	HistoryLimit int    // max history entries kept (pruned automatically)
 	MaxPayload   int    // max accepted clipboard payload in bytes
 	Quiet        bool   // reduce logging
+
+	// Key 是固定的访问 key；留空表示每次启动随机生成一个（推荐）。
+	// 只有 NoAuth 为 false 时才使用。
+	Key string
+	// NoAuth 关闭鉴权：任何能访问该端口的人都能连接并查看历史，只应在完全
+	// 可信的内网里显式开启。
+	NoAuth bool
 }
 
 // Defaults used when Config fields are zero.
@@ -43,11 +52,14 @@ const (
 // Server is the share-clip server: WebSocket endpoint for clients, SQLite
 // history and a web UI.
 type Server struct {
-	cfg    Config
-	store  *store.Store
-	hub    *hub
-	events *broker
-	logf   func(format string, args ...any)
+	cfg      Config
+	store    *store.Store
+	hub      *hub
+	events   *broker
+	logf     func(format string, args ...any)
+	key      string // 本次运行的访问 key；为空表示鉴权已关闭
+	keyGen   bool   // key 是否为启动时随机生成
+	sessions *auth.Sessions
 }
 
 // New opens the database and prepares the server.
@@ -69,16 +81,29 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:    cfg,
-		store:  st,
-		hub:    newHub(),
-		events: newBroker(),
-		logf:   func(string, ...any) {},
+		cfg:      cfg,
+		store:    st,
+		hub:      newHub(),
+		events:   newBroker(),
+		logf:     func(string, ...any) {},
+		sessions: auth.NewSessions(0),
 	}
 	if !cfg.Quiet {
 		s.logf = func(format string, args ...any) {
 			logx.Printf("[server] "+format, args...)
 		}
+	}
+	if !cfg.NoAuth {
+		key := strings.TrimSpace(cfg.Key)
+		if key == "" {
+			key, err = auth.Generate()
+			if err != nil {
+				_ = st.Close()
+				return nil, fmt.Errorf("生成访问 key 失败: %w", err)
+			}
+			s.keyGen = true
+		}
+		s.key = key
 	}
 	return s, nil
 }
@@ -104,6 +129,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
+	// 登录相关端点：guard 会放行这三个，其余一切都要求凭据。
+	mux.HandleFunc("GET "+loginPagePath, s.handleLoginPage)
+	mux.HandleFunc("POST "+loginAPIPath, s.handleLogin)
+	mux.HandleFunc("POST "+logoutAPIPath, s.handleLogout)
+
 	// Brand icon: served from the embedded assets package so the favicon and
 	// touch icons work even when only the server binary is deployed.
 	mux.HandleFunc("GET /favicon.svg", serveAsset(assets.IconSVG, "image/svg+xml"))
@@ -118,7 +148,7 @@ func (s *Server) Handler() http.Handler {
 		panic(err)
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
-	return mux
+	return s.guard(mux)
 }
 
 // serveAsset returns a handler for a static embedded asset. The icons are

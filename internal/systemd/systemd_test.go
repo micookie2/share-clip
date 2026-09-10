@@ -518,3 +518,25 @@ func TestUnitFileExtraArgsCannotInjectDirectives(t *testing.T) {
 		t.Fatalf("换行应被转义后留在同一行:\n%s", text)
 	}
 }
+
+// --no-auth 必须写进 ExecStart，且在固定参数之后、ExtraArgs 之前：附加参数
+// 仍可覆盖它（Go 的 flag 包对重复标量选项「后者生效」）。
+func TestUnitFileNoAuth(t *testing.T) {
+	o := Options{
+		Scope:        ScopeSystem,
+		ExecPath:     "/usr/local/bin/shareclip-server",
+		NoAuth:       true,
+		HistoryLimit: 500,
+		MaxPayload:   32 << 20,
+	}
+	want := "ExecStart=/usr/local/bin/shareclip-server -a :9000 -d /var/lib/share-clip/shareclip.db " +
+		"-l 500 -m 33554432 --no-auth"
+	if !hasLine(UnitFile(o), want) {
+		t.Fatalf("ExecStart 未包含 --no-auth:\n%s", UnitFile(o))
+	}
+	// 不开启时不能凭空多出这个参数。
+	o.NoAuth = false
+	if strings.Contains(UnitFile(o), "--no-auth") {
+		t.Fatalf("未开启 NoAuth 却写入了 --no-auth:\n%s", UnitFile(o))
+	}
+}

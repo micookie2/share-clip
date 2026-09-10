@@ -9,12 +9,15 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/micookie2/share-clip/internal/auth"
 	"github.com/micookie2/share-clip/internal/clipboard"
 	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
@@ -23,6 +26,7 @@ import (
 // Config configures a client agent.
 type Config struct {
 	ServerAddr     string // host:port of the share-clip server
+	Key            string // access key required by the server (empty when it runs --no-auth)
 	ClientID       string // unique identity for this client process
 	Name           string // display name (defaults to the host name)
 	PollIntervalMs int    // clipboard poll interval used by Linux
@@ -177,8 +181,11 @@ func Run(ctx context.Context, cfg Config) error {
 func (a *Agent) connect(ctx context.Context) error {
 	url := "ws://" + a.cfg.ServerAddr + "/ws"
 	a.logf("[client] 正在连接 %s …", url)
-	conn, _, err := websocket.Dial(ctx, url, nil)
+	conn, resp, err := websocket.Dial(ctx, url, a.dialOptions())
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("连接 %s 被拒绝：server 要求访问 key，请填写正确的 key（server 启动日志里有）", url)
+		}
 		return fmt.Errorf("dial %s: %w", url, err)
 	}
 	// The library default read limit is 32 KiB; raise it so large clipboard
@@ -303,6 +310,18 @@ func (a *Agent) maxPayload() int {
 		return protocol.DefaultMaxPayload
 	}
 	return a.cfg.MaxPayload
+}
+
+// dialOptions 把访问 key 放进 WebSocket 握手请求头。没配 key（例如 server 用
+// --no-auth 运行）时不带这个头，与不要求鉴权的 server 保持兼容。
+func (a *Agent) dialOptions() *websocket.DialOptions {
+	key := strings.TrimSpace(a.cfg.Key)
+	if key == "" {
+		return nil
+	}
+	return &websocket.DialOptions{
+		HTTPHeader: http.Header{auth.HeaderName: []string{key}},
+	}
 }
 
 // onLocalChange runs on the watcher goroutine for every genuine local copy.

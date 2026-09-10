@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>share-clip · 需要访问 key</title>
+<meta name="robots" content="noindex">
+<style>
+:root {
+  --fg: #1d2129;
+  --muted: #86909c;
+  --line: #e5e6eb;
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --accent: #3370ff;
+  --accent-hover: #245bdb;
+  --accent-soft: #eaf0ff;
+  --danger: #d93a3a;
+  --radius: 8px;
+  --shadow: 0 8px 32px rgba(29, 33, 41, .12);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e7e9ec;
+    --muted: #8b929c;
+    --line: #2f3339;
+    --bg: #17181a;
+    --surface: #202124;
+    --accent: #5b8cff;
+    --accent-hover: #7ba3ff;
+    --accent-soft: #1e2a44;
+    --danger: #ef6060;
+    --shadow: 0 8px 32px rgba(0, 0, 0, .45);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: grid; place-items: center;
+  background: var(--bg); color: var(--fg); padding: 24px;
+  font-family: "Inter", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px; -webkit-font-smoothing: antialiased;
+}
+.card {
+  width: 100%; max-width: 380px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 26px 24px 22px;
+}
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.logo {
+  width: 34px; height: 34px; border-radius: 8px; background: var(--accent);
+  display: grid; place-items: center; color: #fff; flex: none;
+}
+h1 { font-size: 16px; margin: 0; font-weight: 600; }
+.brand small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; margin-top: 2px; }
+label { display: block; font-size: 13px; margin-bottom: 6px; }
+input {
+  width: 100%; padding: 9px 11px; font-size: 14px; font-family: inherit;
+  color: var(--fg); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.hint { color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.6; }
+button {
+  width: 100%; margin-top: 16px; padding: 10px 12px; font-size: 14px;
+  font-family: inherit; font-weight: 500; color: #fff; background: var(--accent);
+  border: none; border-radius: var(--radius); cursor: pointer;
+}
+button:hover { background: var(--accent-hover); }
+button:disabled { opacity: .6; cursor: default; }
+.error { color: var(--danger); font-size: 13px; margin-top: 12px; min-height: 18px; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+        <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+      </svg>
+    </span>
+    <div>
+      <h1>share-clip 管理页</h1>
+      <small>需要访问 key 才能继续</small>
+    </div>
+  </div>
+  <form id="form">
+    <label for="key">访问 key</label>
+    <input id="key" name="key" type="password" autocomplete="off" spellcheck="false"
+           autocapitalize="off" autofocus required>
+    <div class="hint">key 由 server 每次启动时生成并打印在它的日志/终端里。</div>
+    <button type="submit" id="submit">进入管理页</button>
+    <div class="error" id="error" role="alert"></div>
+  </form>
+</main>
+<script>
+"use strict";
+const form = document.getElementById("form");
+const input = document.getElementById("key");
+const button = document.getElementById("submit");
+const error = document.getElementById("error");
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const key = input.value.trim();
+  if (!key) { error.textContent = "请填写访问 key"; return; }
+  button.disabled = true;
+  error.textContent = "";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    if (r.ok) { location.replace("/"); return; }
+    let msg = `登录失败（HTTP ${r.status}）`;
+    try { const d = await r.json(); if (d && d.error) msg = d.error; } catch (_) {}
+    error.textContent = msg;
+  } catch (err) {
+    error.textContent = "无法连接 server：" + err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

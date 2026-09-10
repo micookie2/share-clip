@@ -370,6 +370,7 @@ func (s *Service) generation() uint64 {
 func (s *Service) agentConfig(cfg appconfig.Config) agent.Config {
 	return agent.Config{
 		ServerAddr:     cfg.Server,
+		Key:            cfg.Key,
 		ClientID:       s.clientID,
 		Name:           s.DisplayName(),
 		PollIntervalMs: cfg.PollMs,

@@ -144,6 +144,38 @@ func TestValidate(t *testing.T) {
 	if err := Validate(Config{Server: "10.0.0.1:9000", MaxPayload: 10}); err == nil {
 		t.Error("内容上限过小应校验失败")
 	}
+	// key 会进 WebSocket 握手请求头：控制字符必须被挡下。
+	if err := Validate(Config{Server: "10.0.0.1:9000", Key: "abc\ndef"}); err == nil {
+		t.Error("key 含换行应校验失败")
+	}
+	if err := Validate(Config{Server: "10.0.0.1:9000", Key: "abc\tdef"}); err == nil {
+		t.Error("key 含制表符应校验失败")
+	}
+	if err := Validate(Config{Server: "10.0.0.1:9000", Key: "good-key"}); err != nil {
+		t.Errorf("普通 key 应通过校验: %v", err)
+	}
+	if err := Validate(Config{Server: "10.0.0.1:9000", Key: strings.Repeat("k", maxKeyLen+1)}); err == nil {
+		t.Error("超长 key 应校验失败")
+	}
+}
+
+func TestKeyRoundTripAndTrimming(t *testing.T) {
+	setConfigHome(t, t.TempDir())
+
+	want := Config{Server: "10.0.0.1:9000", Key: "abc123"}.WithDefaults()
+	if err := want.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Key != "abc123" {
+		t.Fatalf("Key = %q, want abc123", got.Key)
+	}
+	if v := (Config{Key: "  spaced  "}).WithDefaults().Key; v != "spaced" {
+		t.Errorf("WithDefaults 未去掉 key 两端空白: %q", v)
+	}
 }
 
 func TestNormalizedAppliesAddressAndDefaults(t *testing.T) {
