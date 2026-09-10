@@ -20,7 +20,7 @@ ifneq ($(DIRTY),)
 LDFLAGS += -X $(BUILDINFO).Dirty=true
 endif
 
-.PHONY: all build build-windows test test-x11-live vet fmt icon icon-windows clean run-server version
+.PHONY: all build build-windows test test-x11-live vet fmt icon icon-windows clean run-server run-client version
 
 # 默认目标：一次产出全部交付物 —— 本机版 + Windows amd64 版（bin/ 下 4 个文件）。
 # 只想出某一平台时用下面的细分目标：make build / make build-windows。
@@ -79,6 +79,11 @@ icon-windows:
 
 run-server:
 	$(GO) run ./cmd/shareclip-server
+
+# 以桌面模式（系统托盘 + 本地界面）运行客户端，方便调试界面与托盘改动。
+# 想跑纯控制台模式：$(GO) run ./cmd/shareclip-client --console -s host:9000
+run-client:
+	$(GO) run ./cmd/shareclip-client --gui
 
 clean:
 	rm -rf $(BIN) shareclip.db shareclip.db-*

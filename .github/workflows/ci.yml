@@ -43,6 +43,55 @@ jobs:
           make
           ls -1 bin/shareclip-server bin/shareclip-client \
             bin/shareclip-server.exe bin/shareclip-client.exe
+      # 客户端桌面模式（托盘 + 本地界面）的端到端自检：CI 既没有图形会话也没有
+      # 托盘宿主，但本地界面必须照常起来，并能读写配置、退出。
+      - name: 客户端桌面模式自检
+        run: |
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/share-clip-cfg"
+          ./bin/shareclip-client --gui --no-open --ui-addr 127.0.0.1:19210 &
+          client_pid=$!
+          ready=""
+          for _ in $(seq 1 40); do
+            if curl -fsS --max-time 2 http://127.0.0.1:19210/api/health >/dev/null 2>&1; then ready=1; break; fi
+            sleep 0.25
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::桌面模式未能在 10s 内提供本地界面"
+            kill "$client_pid" 2>/dev/null
+            exit 1
+          fi
+          health="$(curl -fsS http://127.0.0.1:19210/api/health)"
+          echo "$health"
+          case "$health" in
+            *'"app":"share-clip-client"'*) ;;
+            *) echo "::error::/api/health 未确认身份: $health"; kill "$client_pid"; exit 1;;
+          esac
+          curl -fsS http://127.0.0.1:19210/api/state | head -c 300; echo
+          curl -fsS -X POST -H 'Content-Type: application/json' -H 'X-Requested-With: share-clip' \
+            -d '{"server":"127.0.0.1:19000","name":"ci"}' http://127.0.0.1:19210/api/config >/dev/null
+          grep -q '"server": "127.0.0.1:19000"' "$XDG_CONFIG_HOME/share-clip/config.json"
+          # 写操作必须要求自定义头（挡跨站请求），缺了就应当是 403。
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d '{"paused":true}' http://127.0.0.1:19210/api/pause)"
+          if [ "$code" != "403" ]; then
+            echo "::error::缺少自定义头的写请求返回 $code，防护未生效"
+            kill "$client_pid"
+            exit 1
+          fi
+          curl -fsS -X POST -H 'Content-Type: application/json' -H 'X-Requested-With: share-clip' \
+            -d '{}' http://127.0.0.1:19210/api/quit >/dev/null
+          if ! wait "$client_pid"; then echo "::error::客户端未正常退出"; exit 1; fi
+      # systemd 安装计划必须能在没有 systemd 的环境里生成（--dry-run 不落盘、不调 systemctl）。
+      - name: systemd 安装计划自检
+        run: |
+          out="$(./bin/shareclip-server install --user --dry-run 2>&1)"
+          echo "$out"
+          for want in 'WantedBy=default.target' 'ExecStart=' 'Restart=always'; do
+            case "$out" in
+              *"$want"*) ;;
+              *) echo "::error::install --dry-run 缺少 $want"; exit 1;;
+            esac
+          done
 
   # client/server 都要能在 Windows 上编译并跑通测试（剪贴板走 Win32 API）。
   windows:

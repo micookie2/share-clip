@@ -15,6 +15,10 @@
 历史；server 同时提供一个小型 Web 页面，可以查看历史并选择条目重新推送到
 全部在线客户端。
 
+client 有两种运行方式：**不带 `-s` 双击运行**进入桌面模式——系统托盘常驻，
+同时用默认浏览器打开本地设置/日志页面；**显式给出 `-s`**（或加 `--console`）
+则是原来的控制台模式，日志打在终端，适合脚本与开机自启。
+
 支持 **文本**、**富文本（HTML）** 与 **图片**（PNG）。**文件复制暂不支持**，
 会被自动忽略。富文本同步会同时携带纯文本与 HTML 两种格式：粘贴到浏览器/
 Office 等富文本编辑器保留格式，粘贴到纯文本框仍得到纯文本。
@@ -22,8 +26,9 @@ Office 等富文本编辑器保留格式，粘贴到纯文本框仍得到纯文�
 ```
   Windows 机器 A                Linux 机器 B
  ┌──────────────┐              ┌──────────────┐
- │ shareclip-   │  复制/推送    │ shareclip-   │
+ │ shareclip-   │  复制/推送   │ shareclip-   │
  │ client       │◄────────────►│ client       │
+ │ 托盘+本地界面│              │ 托盘+本地界面│
  └──────┬───────┘   WebSocket  └──────┬───────┘
         │  ws://host:9000/ws          │
         └──────────────┬──────────────┘
@@ -64,6 +69,10 @@ Office 等富文本编辑器保留格式，粘贴到纯文本框仍得到纯文�
   同一段内容同样只广播第一次。Web 页“推送”不写历史，不受影响。
 - client 启动时不会自动推送当前剪贴板，新加入的 client 也不会自动收到历史；
   需要旧内容时在 Web 页手动推送。
+- **桌面模式**：不带 `-s` 启动时进入桌面模式（系统托盘 + 本地界面），服务器
+  地址等设置保存在用户配置目录，下次启动自动沿用；`--console` 或命令行给了
+  `-s` 则保持控制台行为。暂停同步会断开与 server 的连接：暂停期间本机复制
+  不发送、也收不到其它机器的内容，恢复后立即重连（暂停期间复制的内容不会补发）。
 - **日志一行一条**：剪贴板内容、机器名等可能带换行的文本在打印前统一转义
   （`\n`、`\t` 等按字面量显示），方便直接 grep server 日志。
 - **逐消息日志**：server 会打印收到的每一帧（`[recv] …`）以及发出的每次推送
@@ -81,14 +90,24 @@ Office 等富文本编辑器保留格式，粘贴到纯文本框仍得到纯文�
 | Windows 10/11 | 无（纯 Go syscall） | 图片经 CF_DIB 读入，自研 DIB↔PNG 转换 |
 | Linux (X11) | `xclip` | 复制检测走 XFixes 事件（几乎所有现代 X server 自带），事件不可用时退回轮询；`apt install xclip` |
 | Linux (Wayland) | `wl-clipboard` | 支持 `--list-types` 的 wl-clipboard 2.x 体验最佳；GNOME 等无事件通道，按 `-p` 间隔轮询；`apt install wl-clipboard` |
+| 托盘（Windows / Linux） | 无（`fyne.io/systray` 纯 Go 实现） | Windows 用系统 `Shell_NotifyIcon`；Linux 走 D-Bus 会话总线上的 StatusNotifierItem，需要面板支持（KDE、XFCE、MATE、Cinnamon、GNOME + AppIndicator 扩展等） |
 
-client 需要运行在有图形会话（`DISPLAY` 或 `WAYLAND_DISPLAY`）的桌面环境中；
-无图形会话会直接报错退出。server 无桌面要求，适合放常开机器/NAS。
+client 的剪贴板监听需要图形会话（`DISPLAY` 或 `WAYLAND_DISPLAY`）：控制台模式下
+没有图形会话会直接报错退出，桌面模式会在界面/托盘里显示「本地环境问题」并按
+退避自动重试（装好依赖后无需重启客户端）。server 无桌面要求，适合放常开机器/NAS。
+
+托盘与本地界面不引入新的系统依赖：Windows 与 Linux 都使用纯 Go 的
+`fyne.io/systray` v1.12.2（无 CGO、无 GTK，也不需要额外构建标签）。Linux 托盘
+通过 D-Bus 会话总线上的 freedesktop StatusNotifierItem 协议工作，需要支持它的
+桌面面板（KDE、XFCE、MATE、Cinnamon、GNOME + AppIndicator 扩展等）；检测不到
+会话总线时客户端照常运行，只是没有托盘图标，退出请用本地界面上的「退出客户端」。
 
 ## 构建
 
 需要 Go 1.25+（使用 Go 1.22 风格路由与较新的标准库）。第三方依赖：WebSocket
-库 `github.com/coder/websocket`、纯 Go SQLite 驱动 `modernc.org/sqlite`。
+库 `github.com/coder/websocket`、纯 Go SQLite 驱动 `modernc.org/sqlite`、
+系统托盘库 `fyne.io/systray` v1.12.2（Windows/Linux 上均为纯 Go，无 CGO/GTK，
+也不需要额外构建标签）。
 
 ```bash
 make                # 一次生成全部：本机版 + Windows amd64 版（bin/ 下共 4 个文件）
@@ -149,14 +168,24 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 # 1) 在常开机器上启动 server（默认端口 9000，数据库 shareclip.db 存于当前目录）
 ./shareclip-server
 
-# 2) 每台要共享剪贴板的机器启动 client（Windows / Linux 都如此）
+# 2) 每台要共享剪贴板的机器启动 client，两种方式任选：
+
+#    2a) 桌面模式（双击运行，或直接不带参数运行）：系统托盘常驻，
+#        浏览器自动打开本地设置页（默认 http://127.0.0.1:9210），
+#        第一次使用在页面里填写 server 地址即可。Windows / Linux 都如此。
+./shareclip-client
+
+#    2b) 控制台模式（脚本、开机自启）：显式给出 server 地址，日志打在终端，
+#        不托盘、不打开页面。命令行给 -s 或加 --console 都走这条路径。
 ./shareclip-client -s 192.168.1.10:9000
+./shareclip-client --console            # 地址取自桌面界面保存过的配置
 
 # 3) 正常复制/粘贴即可。可选：浏览器打开 http://192.168.1.10:9000/
 #    查看历史、点“推送到全部在线客户端”把某条内容重新推到所有机器。
 ```
 
-启动参数都有单字母简写，日常用短的就够；`-h` 随时看完整说明。
+启动参数都有单字母简写，日常用短的就够；`-h` 随时看完整说明。server 另有
+`install` / `uninstall` 两个子命令（见下文「安装为 systemd 服务」）。
 
 ### server 参数
 
@@ -173,18 +202,140 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 
 | 简写 | 长写法 | 默认 | 说明 |
 |------|--------|------|------|
-| `-s` | `--server` | （必填） | server 地址 `host:port` |
+| `-s` | `--server` | — | server 地址 `host:port`；不给 `-s` 时默认进桌面模式（地址在界面里设置），给了则默认进控制台模式（`-g`/`-c` 可改变默认） |
+| `-g` | `--gui` | false | 强制桌面模式（托盘 + 本地界面），例如 `--gui -s 1.2.3.4:9000` |
+| `-c` | `--console` | false | 强制控制台模式；不带 `-s` 时使用桌面界面保存的服务器地址 |
 | `-n` | `--name` | 主机名 | 在其它机器/Web 页显示的机器名 |
 | `-p` | `--poll` | `1000` | 监听兜底轮询间隔毫秒：X11 默认由 XFixes 复制事件驱动，事件不可用才按此间隔；Wayland（无事件通道）按此间隔 |
 | `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
+| — | `--ui-addr` | `127.0.0.1:9210` | 桌面模式本地界面的监听地址（只监听本机回环） |
+| — | `--no-open` | false | 桌面模式启动后不自动打开浏览器 |
 | `-q` | `--quiet` | false | 减少日志 |
 | `-v` | `--version` | — | 打印版本号与构建信息（commit、构建时间、Go 版本/平台）后退出 |
 
 简写与长写法完全等价（`-s`、`-server`、`--server` 三种都能用，取值可写
 `-s 1.2.3.4:9000` 或 `-s=1.2.3.4:9000`），因此老命令、开机自启脚本里的
-`-server ...` 依旧照原样工作。
+`-server ...` 依旧照原样工作。`-g/--gui` 与 `-c/--console` 只是强制选择运行
+方式，不改变其它选项的写法。
 
-## Web 页面
+### 客户端桌面模式（托盘 + 本地界面）
+
+不带 `-s` 运行（双击即可）进入桌面模式；`-g/--gui` 可强制进入，例如
+`shareclip-client --gui -s 1.2.3.4:9000`（命令行给的值优先于已保存的配置）。
+
+- **托盘 + 浏览器页面**：托盘图标常驻，同时用系统默认浏览器打开
+  `http://127.0.0.1:9210`（`--ui-addr` 可改，只监听回环；`--no-open` 则不自动
+  打开浏览器）。关掉页面不影响运行。
+- **页面能做什么**：填写服务器地址、本机显示名、轮询间隔与单条上限（保存后立即
+  按新配置重连）；实时显示连接状态（当前阶段、server、重连倒计时）；实时日志
+  （SSE 推送，可清空、可自动滚动）；页脚显示配置文件与日志文件路径、托盘是否
+  可用、版本与构建信息；另有「退出客户端」按钮。
+- **托盘菜单**：一行禁用状态（如 `已连接：192.168.1.10:9000`）、`打开设置与日志`、
+  `启用同步`/`暂停同步` 复选框、`退出`。暂停会断开与 server 的连接：期间本机
+  复制不发送、也收不到别人的内容；恢复后立即重连。
+- **设置持久化**：Windows `%AppData%\share-clip\config.json`，Linux
+  `~/.config/share-clip/config.json`（遵循 XDG）。字段：`server`、`name`、
+  `pollMs`、`maxPayload`。桌面模式还在同目录写日志文件 `client.log`，超过 2 MiB
+  轮转为 `client.log.old`——托盘模式没有可见控制台，这个文件就是现场记录。
+- **单实例**：再次双击时会先探测固定端口 `127.0.0.1:9210` 上是否已有 share-clip
+  客户端在跑，有就只把它的页面重新打开，不再起第二个进程；该端口被别的程序占用
+  时本地界面会自动退到随机端口（日志里有提示），此时再次双击会起第二个进程。
+- **Windows**：客户端仍按控制台子系统编译（`-v`、在终端里运行照常有输出），
+  桌面模式会隐藏双击时系统分配的控制台窗口；从已有终端启动时不会隐藏那个终端。
+- **Linux**：托盘走 freedesktop **StatusNotifierItem** 协议（D-Bus 会话总线，
+  由 `fyne.io/systray` 实现），需要支持它的桌面面板（KDE、XFCE、MATE、Cinnamon、
+  GNOME + AppIndicator 扩展等）。检测不到会话总线时客户端照常运行，只是少了托盘
+  图标（日志里会写明未检测到可用的系统托盘），退出请用页面上的「退出客户端」
+  按钮。构建不需要额外系统包。
+- **安全**：界面只监听回环地址，拒绝非回环 `Host`（防 DNS rebinding），所有写
+  请求都要求自定义请求头 `X-Requested-With: share-clip`（防 CSRF），没有新增
+  网络暴露面。
+- 运行中的客户端在本地界面提供 `GET /api/health`、`/api/state`、`/api/logs`、
+  `/api/events`（SSE）与 `POST /api/config`、`/api/reconnect`、`/api/pause`、
+  `/api/logs/clear`、`/api/quit`。
+
+### 安装为 systemd 服务
+
+```bash
+# 系统级（需要 root）：/etc/systemd/system/share-clip.service，开机自启
+sudo install -m755 bin/shareclip-server /usr/local/bin/shareclip-server  # 先放到固定路径
+sudo shareclip-server install
+sudo shareclip-server install --no-start   # 只 enable，不立即启动
+
+# 用户级（无需 root）：~/.config/systemd/user/share-clip.service
+shareclip-server install --user
+loginctl enable-linger <user>   # 需要登出后仍在跑 / 开机无登录会话也启动时
+
+# 只查看会写入的单元文件与将执行的命令，不落盘、不调用 systemctl
+shareclip-server install --dry-run
+
+# 卸载：停止 + 禁用 + 删除单元 + reload；--purge 连数据目录（数据库）一起删
+sudo shareclip-server uninstall
+shareclip-server uninstall --user --purge
+```
+
+- `install` 写入单元文件后执行 `systemctl daemon-reload` 与
+  `systemctl enable --now <单元名>`（加了 `--no-start` 就只有 `enable`）；
+  用户级相关命令一律带 `--user`。
+- 数据目录：系统级 `/var/lib/share-clip`（由单元的 `StateDirectory=` 创建并归属；
+  默认 `DynamicUser=yes` 时实际位于 `/var/lib/private/share-clip`，
+  `/var/lib/share-clip` 是指向它的符号链接），用户级 `~/.local/share/share-clip`
+  （单元用 `ExecStartPre=/bin/mkdir -p` 创建）。数据库默认是数据目录下的
+  `shareclip.db`。
+- `install` 的 `-a/-d/-l/-m` 决定 `ExecStart` 里的监听地址、数据库路径、历史
+  条数与单条上限（默认值与普通启动一致，只有数据库路径默认落在数据目录而不是
+  当前目录）；**服务器的其它参数**（当前是 `-q`，以及以后新增的参数）用可重复的
+  `--exec-arg` 追加，例如 `sudo shareclip-server install --exec-arg=-q
+  --exec-arg=-l --exec-arg=1000`，等价的单元行是
+  `ExecStart=…/shareclip-server -a :9000 -d … -l 500 -m 33554432 -q -l 1000`
+  （重复的标量参数后者生效，所以这样也能覆盖前面的默认值）。
+- 想改的不只是启动参数（环境变量、资源限制、依赖关系等）时，用 systemd 原生的
+  覆盖，不必改单元文件本身：`sudo systemctl edit share-clip` 会生成
+  `/etc/systemd/system/share-clip.service.d/override.conf`，在里面写
+  `[Service]`；要换掉 `ExecStart` 必须先写一行空的 `ExecStart=` 清空原值，再写
+  新的 `ExecStart=…`（`Type=simple` 不允许两条 `ExecStart`）。drop-in 与主单元
+  分开存放，因此重新 `install --force` 不会覆盖它。
+- 单元固定带 `Restart=always`、`RestartSec=2`、journald 日志、
+  `After/Wants=network-online.target`，以及加固项（`NoNewPrivileges`、
+  `PrivateTmp`、`ProtectSystem=full`；系统级另有 `ProtectHome=true`）。
+- 排障：`systemctl status share-clip`、`journalctl -u share-clip -f`；用户级加
+  `--user`（`systemctl --user status share-clip`、`journalctl --user -u share-clip -f`）。
+
+**务必先安装到固定路径**：`install` 用的是**当前正在运行的那个可执行文件**的
+路径。`go run` 的临时产物会被直接拒绝（这类文件重启后就不存在了）；家目录下的
+二进制（如 `~/go/bin/shareclip-server`）在系统级单元里也不可用，因为系统级单元
+带 `ProtectHome=true`，家目录对它不可见。正确做法是先 `go build`，再
+`sudo install -m755 bin/shareclip-server /usr/local/bin/`，然后用该路径运行
+`install`。
+
+#### install 选项
+
+| 简写 | 长写法 | 默认 | 说明 |
+|------|--------|------|------|
+| `-a` | `--addr` | `:9000` | 写进 `ExecStart` 的监听地址 |
+| `-d` | `--db` | 数据目录下的 `shareclip.db` | SQLite 数据库路径；留空按作用域推导 |
+| `-l` | `--history-limit` | `500` | 历史保留条数 |
+| `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
+| `-u` | `--user` | false | 安装为用户级服务（`~/.config/systemd/user`，无需 root） |
+| `-n` | `--name` | `share-clip` | 单元名（不含 `.service`） |
+| — | `--run-as` | 空（`DynamicUser=yes`） | 系统级服务以该用户运行；用户级会忽略此选项 |
+| — | `--exec-arg` | 空 | 追加到 `ExecStart` 的额外启动参数，可重复（如 `--exec-arg=-q`）；服务器将来新增的参数也走这里，后出现的标量参数会覆盖前面的 |
+| — | `--unit-dir` | 按作用域 | 覆盖单元文件目录 |
+| — | `--no-start` | false | 只 enable，不立即启动 |
+| `-f` | `--force` | false | 覆盖已存在的单元文件 |
+| — | `--dry-run` | false | 只打印单元文件与将执行的命令 |
+
+#### uninstall 选项
+
+| 简写 | 长写法 | 默认 | 说明 |
+|------|--------|------|------|
+| `-u` | `--user` | false | 卸载用户级服务（`~/.config/systemd/user`） |
+| `-n` | `--name` | `share-clip` | 单元名（不含 `.service`） |
+| — | `--unit-dir` | 按作用域 | 覆盖单元文件目录 |
+| — | `--purge` | false | 同时删除数据目录（数据库） |
+| — | `--dry-run` | false | 只打印将删除的文件与将执行的命令 |
+
+## Web 页面（server 管理页）
 
 `http://<server>:9000/`（默认监听全部网卡，内网可访问）：
 
@@ -211,9 +362,10 @@ commit、构建时间、Go 版本/平台）、`GET /api/events`（SSE 事件流�
 
 ```
 assets/                 品牌图标（icon.svg 为源，PNG/ICO 与 Windows .syso 由它生成）
-cmd/shareclip-server/   server 入口
-cmd/shareclip-client/   client 入口
-internal/agent/         client 主逻辑：监听剪切板、收发、自动重连
+cmd/shareclip-server/   server 入口（含 install / uninstall 子命令）
+cmd/shareclip-client/   client 入口：选择控制台/桌面模式，串联托盘、本地界面与 agent
+internal/agent/         client 主逻辑：监听剪切板、收发、自动重连（含连接状态回调）
+internal/appconfig/     client 持久化设置：config.json 路径、默认值、读写、地址规范化
 internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语义）
   clipboard_windows.go  Win32：CF_UNICODETEXT / CF_HTML / CF_DIB（stdlib syscall）
   clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+图优先+富文本+多格式转 PNG
@@ -222,24 +374,42 @@ internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语
 internal/buildinfo/     版本号/commit/构建时间（-ldflags 注入，日志、-v、Web 共用）
 internal/dib/           纯 Go DIB↔PNG 编解码（Windows 图片用）
 internal/cli/           命令行选项：长写法 + 单字母简写共用一个变量
-internal/logx/          日志出口：保证一条事件只占一行
+internal/clientsvc/     client 服务：配置 + agent 生命周期 + 状态快照 + 日志环形缓冲
+internal/clientui/      桌面模式本地界面：只监听回环的 HTTP 服务（防 DNS rebinding/CSRF）
+  webui/index.html      设置/状态/日志页面（内嵌，浏览器打开）
+internal/logx/          日志出口：保证一条事件只占一行（托盘模式另写 client.log）
 internal/protocol/      消息格式（JSON 头 + 二进制负载）
 internal/server/        WS 集线器、广播、SSE 事件、Web API 与内嵌页面
 internal/store/         SQLite 历史存储（清理/分页/内容读取）
+internal/systemd/       systemd 单元生成 + install/uninstall（纯函数 + 可替换执行器）
+internal/tray/          系统托盘图标与菜单（fyne.io/systray）
 ```
 
 ## 测试
 
 ```bash
-go test -count=1 ./...   # 协议/DIB/Watcher/存储/e2e 广播与推送
+go test -count=1 ./...   # 协议/DIB/Watcher/存储/客户端服务/托盘/systemd/e2e 广播与推送
 ```
 
 e2e 测试用真实的 WebSocket 连接验证：广播给除发送者外所有 client、图片内容、
-历史入库、Web 内容读取与 Web 推送、清空历史。
+历史入库、Web 内容读取与 Web 推送、清空历史。托盘菜单模型、systemd 单元生成与
+安装流程（替换执行器，不真的调用 systemctl）、客户端配置与服务生命周期都有
+各自的单元测试，不需要图形会话或 systemd。
 
 ## 已知限制（有意为之，v1 范围）
 
 - 明文、无鉴权：仅适合可信局域网；跨公网请自行加 VPN/TLS。
+- 桌面模式的界面是浏览器页面，不是原生窗口：看日志/改设置都得开着那个页面
+  （关掉页面不影响同步）。
+- 桌面模式的 Linux 托盘依赖 D-Bus 会话总线上的 StatusNotifierItem 协议，需要
+  支持它的桌面面板（KDE、XFCE、MATE、Cinnamon、GNOME + AppIndicator 扩展等）；
+  没有托盘时客户端仍会运行，只是退出只能靠本地页面上的按钮。
+- 单实例靠固定端口 `127.0.0.1:9210` 探测：该端口被别的程序占用时本地界面会
+  退到随机端口（日志有提示），此时再次双击会启动第二个客户端进程。
+- 暂停同步会断开与 server 的连接：暂停期间既不发送本机复制，也收不到其它机器
+  的内容，恢复后立即重连；暂停期间复制的内容不会补发（与断线期间一致）。
+- 托盘模式的日志写在配置文件旁的 `client.log`（超过 2 MiB 轮转为
+  `client.log.old`）；控制台模式不写日志文件，日志只在终端。
 - Wayland 无合成器级复制事件（GNOME 完全没有，KDE/wlroots 也只在装了
   wl-clipboard 2.x 且有 data-control 协议时才支持），因此 Wayland 侧仍是轮询：
   检测延迟 ≈ `-p` 间隔，“相同内容再次复制”无法识别（见上文行为约定）。
@@ -257,7 +427,6 @@ e2e 测试用真实的 WebSocket 连接验证：广播给除发送者外所有 c
 ## Roadmap（可能的方向）
 
 - 文件传输、TLS 与简单密码鉴权
-- 系统托盘常驻客户端
 - Web 推送支持指定机器、批量选择、历史导出/搜索
 - 压缩传输（图片 PNG 无损体积可能偏大）
 
