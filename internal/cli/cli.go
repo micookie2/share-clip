@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Cmd 是一个程序用到的全部选项。请用 New 创建，零值不可用。
@@ -86,6 +87,20 @@ func (c *Cmd) Bool(short, long string, def bool, usage string) *bool {
 	return p
 }
 
+// Strings 注册可重复的字符串选项：写几次就按顺序收集几个值。
+//
+// 用于「追加任意参数」这类选项（如 shareclip-server install --exec-arg=-q：
+// 服务器将来新增的开关不必再逐个加进本包）。帮助里标成 (可重复)。
+func (c *Cmd) Strings(short, long, usage string) *[]string {
+	v := &stringList{}
+	c.fs.Var(v, long, usage)
+	if short != "" {
+		c.fs.Var(aliasStrings{v}, short, "")
+	}
+	c.addRepeatable(short, long, "string", usage)
+	return &v.items
+}
+
 // Parse 解析 os.Args[1:]，返回剩余的位置参数。
 // 参数非法时 New 设定的 ExitOnError 已经打印帮助并退出进程，这里无需处理错误。
 func (c *Cmd) Parse() []string {
@@ -143,6 +158,28 @@ func (c *Cmd) Usage() {
 func (c *Cmd) add(short, long, typ, usage, def string) {
 	c.items = append(c.items, item{short: short, long: long, typ: typ, usage: usage, def: def})
 }
+
+// addRepeatable 登记一个可重复选项：帮助里额外标一句，避免用户以为只在最后
+// 一次取值（这跟普通选项正好相反）。
+func (c *Cmd) addRepeatable(short, long, typ, usage string) {
+	c.items = append(c.items, item{short: short, long: long, typ: typ, usage: usage + "（可重复）"})
+}
+
+// stringList 是「可重复字符串选项」的 flag.Value：每次 Set 追加一个值。
+type stringList struct{ items []string }
+
+func (s *stringList) String() string { return strings.Join(s.items, ",") }
+
+func (s *stringList) Set(v string) error {
+	s.items = append(s.items, v)
+	return nil
+}
+
+// aliasStrings 让简写与长写法写进同一个列表。
+type aliasStrings struct{ v *stringList }
+
+func (a aliasStrings) String() string     { return a.v.String() }
+func (a aliasStrings) Set(s string) error { return a.v.Set(s) }
 
 // 下面的别名类型只是把短名转发到长名注册的变量上。
 //

@@ -144,3 +144,28 @@ func TestChangedReportsExplicitFlagsOnly(t *testing.T) {
 		t.Error("没有参数时 Changed 应为 false")
 	}
 }
+
+func TestStringsCollectsEveryOccurrence(t *testing.T) {
+	c := New("demo")
+	extra := c.Strings("", "exec-arg", "追加参数")
+	addr := c.String("a", "addr", ":9000", "监听地址")
+	c.ParseArgs([]string{"--exec-arg=-q", "--exec-arg", "-l", "--exec-arg=1000", "-a", ":9100"})
+
+	// 与普通选项相反：可重复选项每次出现都要留下，不能被后一次覆盖。
+	want := []string{"-q", "-l", "1000"}
+	if len(*extra) != len(want) {
+		t.Fatalf("extra = %q, want %q", *extra, want)
+	}
+	for i := range want {
+		if (*extra)[i] != want[i] {
+			t.Fatalf("extra = %q, want %q", *extra, want)
+		}
+	}
+	// 它不能把后面的普通选项当成自己的取值。
+	if *addr != ":9100" {
+		t.Errorf("addr = %q, want :9100", *addr)
+	}
+	if got := c.ParseArgs(nil); len(got) != 0 {
+		t.Errorf("位置参数 = %q", got)
+	}
+}
