@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Message kinds.
@@ -27,7 +28,6 @@ const (
 	KindClip    = "clip"    // client -> server and server -> clients
 	KindJoined  = "joined"  // server -> clients, presence notification
 	KindLeft    = "left"    // server -> clients, presence notification
-	KindPing    = "ping"    // keepalive, both directions
 )
 
 // Origin identifiers used by the server when it originates a message itself.
@@ -149,4 +149,71 @@ func NewClip(mime, clientID, clientName string, payload []byte) *Msg {
 		ClientName: clientName,
 		Payload:    payload,
 	}
+}
+
+// previewRunes bounds the clipboard text embedded in Summary so that one log
+// line stays short even for a large copy.
+const previewRunes = 60
+
+// Summary returns a one-line description of the message for logging, for
+// example:
+//
+//	hello alice (host-1)
+//	clip text/plain 12 B from alice: hello world
+//	welcome count=2
+//
+// Text payloads are truncated to a short preview, but the preview may still
+// contain raw control bytes from the clipboard: callers log the result through
+// logx, which is what actually keeps one record on one line.
+func (m *Msg) Summary() string {
+	switch m.Kind {
+	case KindHello:
+		return fmt.Sprintf("hello %s", m.origin())
+	case KindWelcome:
+		return fmt.Sprintf("welcome count=%d", m.Count)
+	case KindClip:
+		s := fmt.Sprintf("clip %s %d B from %s", m.MIME, len(m.Payload), m.origin())
+		if m.MIME == MIMEText && len(m.Payload) > 0 {
+			if p := textPreview(m.Payload); p != "" {
+				s += ": " + p
+			}
+		}
+		return s
+	case KindJoined:
+		return fmt.Sprintf("joined %s", m.origin())
+	case KindLeft:
+		return fmt.Sprintf("left %s", m.origin())
+	default:
+		return fmt.Sprintf("unknown kind=%s", m.Kind)
+	}
+}
+
+// origin renders the sender as "name (id)", falling back to whichever half is
+// present so presence and clip records stay readable. Server-originated
+// messages carry the same value in both fields, so they collapse to one name.
+func (m *Msg) origin() string {
+	if m.ClientID == OriginWeb {
+		return OriginName
+	}
+	switch {
+	case m.ClientName != "" && m.ClientID != "":
+		return m.ClientName + " (" + m.ClientID + ")"
+	case m.ClientName != "":
+		return m.ClientName
+	case m.ClientID != "":
+		return m.ClientID
+	default:
+		return "unknown"
+	}
+}
+
+// textPreview returns the leading runes of a text payload with invalid UTF-8
+// replaced, so a malformed copy cannot break the log line.
+func textPreview(payload []byte) string {
+	s := strings.ToValidUTF8(string(payload), "")
+	r := []rune(s)
+	if len(r) > previewRunes {
+		return string(r[:previewRunes]) + "…"
+	}
+	return s
 }

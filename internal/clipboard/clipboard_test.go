@@ -1,7 +1,11 @@
 package clipboard
 
 import (
+	"bytes"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"sync"
 	"testing"
 	"time"
@@ -93,6 +97,77 @@ func (p *pollBackend) quietSet(c Content) {
 	p.fakeBackend.mu.Unlock()
 }
 
+// reencodeBackend models a clipboard that stores what it is given but presents
+// it back re-encoded — like the Windows CF_DIB path, where a written PNG comes
+// back as a different PNG encoding of the same picture.
+type reencodeBackend struct {
+	fakeBackend
+}
+
+func (b *reencodeBackend) Snapshot() (Content, error) {
+	c, err := b.fakeBackend.Snapshot()
+	if err != nil || c.Kind != KindImage {
+		return c, err
+	}
+	canon, ok := canonicalPNG(c.PNG)
+	if !ok {
+		return c, nil
+	}
+	return Content{Kind: KindImage, PNG: canon}, nil
+}
+
+// canonicalPNG re-encodes a PNG the way a Windows DIB round-trip would: the
+// pixels are flattened into an opaque RGBA grid and encoded again, which
+// usually produces different bytes than the source encoding.
+func canonicalPNG(data []byte) ([]byte, bool) {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, false
+	}
+	rgba := image.NewRGBA(img.Bounds())
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			rgba.Set(x, y, img.At(x, y))
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, rgba); err != nil {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+// testPicture returns two PNG encodings of the same picture whose bytes
+// differ: a paletted one (like a PNG copied from a web page) and the opaque
+// re-encoding a Windows DIB round-trip yields. The tests rely on the two
+// depicting identical pixels.
+func testPicture(t *testing.T) (paletted, canonical []byte) {
+	t.Helper()
+	pal := color.Palette{
+		color.RGBA{R: 255, A: 255},
+		color.RGBA{G: 255, A: 255},
+		color.RGBA{B: 255, A: 255},
+	}
+	pm := image.NewPaletted(image.Rect(0, 0, 4, 3), pal)
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 4; x++ {
+			pm.SetColorIndex(x, y, uint8((x+y)%3))
+		}
+	}
+	var orig bytes.Buffer
+	if err := png.Encode(&orig, pm); err != nil {
+		t.Fatalf("encode paletted: %v", err)
+	}
+	canon, ok := canonicalPNG(orig.Bytes())
+	if !ok {
+		t.Fatal("canonical re-encode failed")
+	}
+	if bytes.Equal(orig.Bytes(), canon) {
+		t.Fatal("test pictures must differ byte-wise to model a re-encoding clipboard")
+	}
+	return orig.Bytes(), canon
+}
+
 // recorder is a thread-safe list of reported content, used by the tests since
 // onChange fires from the watcher goroutine.
 type recorder struct {
@@ -180,7 +255,40 @@ func TestWatcherRemoteApplyNotReported(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool { return rec.len() == 1 })
 }
 
-func TestWatcherUserChangeBetweenApplyAndPoll(t *testing.T) {
+// TestWatcherRemoteImageNotEchoedWhenReadbackReencodes covers the Windows
+// image path: a received PNG is stored as a CF_DIB bitmap and read back as a
+// re-encoded PNG with *different bytes* (same picture). Echo suppression must
+// be keyed to that read-back form; otherwise the receiver would re-share the
+// image it just received and the server would broadcast it back — the
+// "duplicate image receive" symptom.
+func TestWatcherRemoteImageNotEchoedWhenReadbackReencodes(t *testing.T) {
+	orig, canon := testPicture(t)
+	b := &reencodeBackend{}
+	rec := &recorder{}
+	w := NewWatcher(b, rec.add)
+	w.Start()
+	defer w.Stop()
+
+	time.Sleep(20 * time.Millisecond) // let it prime the empty state
+
+	if err := w.ApplyRemote(Content{Kind: KindImage, PNG: orig}); err != nil {
+		t.Fatalf("ApplyRemote: %v", err)
+	}
+
+	// Wait well past a watcher poll cycle: the re-encoded read-back must not
+	// be mistaken for a local copy.
+	time.Sleep(150 * time.Millisecond)
+	if n := rec.len(); n != 0 {
+		t.Fatalf("received image echoed back as a local change (%d item(s))", n)
+	}
+
+	// A genuine local re-copy of the same picture afterwards must still be
+	// shared (Windows reports identical re-copies as genuine events).
+	b.set(Content{Kind: KindImage, PNG: canon})
+	waitFor(t, 2*time.Second, func() bool { return rec.len() == 1 })
+}
+
+func TestWatcherUserChangeAfterApplyNotSwallowedOrDoubled(t *testing.T) {
 	b := &fakeBackend{}
 	rec := &recorder{}
 	w := NewWatcher(b, rec.add)
@@ -191,7 +299,19 @@ func TestWatcherUserChangeBetweenApplyAndPoll(t *testing.T) {
 	if err := w.ApplyRemote(Content{Kind: KindText, Text: "remote"}); err != nil {
 		t.Fatalf("ApplyRemote: %v", err)
 	}
-	// User copies something else before the watcher observes the remote write.
+	if w.suppressed == nil {
+		t.Fatal("ApplyRemote did not arm echo suppression")
+	}
+	// Let the watcher observe (and suppress) our own write first. Without this
+	// handshake the fake backend's single boolean event flag can collapse the
+	// remote write and the user copy below into one or two wakeups at random,
+	// which models two genuine copies of the same content and legitimately
+	// reports twice — a nondeterministic test, not a real bug.
+	waitFor(t, 2*time.Second, func() bool { return w.suppressed == nil })
+
+	// A genuine user copy right after the remote apply must be shared exactly
+	// once: the stale suppression must not swallow it, and there is only one
+	// copy action.
 	b.set(Content{Kind: KindText, Text: "user"})
 	waitFor(t, 2*time.Second, func() bool { return rec.len() == 1 })
 	if rec.len() != 1 || rec.item(0).Text != "user" {

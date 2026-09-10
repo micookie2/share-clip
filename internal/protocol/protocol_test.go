@@ -3,7 +3,10 @@ package protocol
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/micookie2/share-clip/internal/logx"
 )
 
 func TestFrameRoundTripText(t *testing.T) {
@@ -45,7 +48,7 @@ func TestFrameRoundTripBinary(t *testing.T) {
 }
 
 func TestControlFrameNoPayload(t *testing.T) {
-	m := &Msg{Kind: KindPing, ClientID: "c"}
+	m := &Msg{Kind: KindJoined, ClientID: "c"}
 	frame, err := m.Frame(0)
 	if err != nil {
 		t.Fatalf("Frame: %v", err)
@@ -54,7 +57,7 @@ func TestControlFrameNoPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if got.Kind != KindPing || len(got.Payload) != 0 {
+	if got.Kind != KindJoined || len(got.Payload) != 0 {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -102,5 +105,57 @@ func TestGarbageHeader(t *testing.T) {
 	// header length says 16 but content is not JSON
 	if _, err := Parse(frame, 0); err == nil {
 		t.Fatalf("expected parse error")
+	}
+}
+
+func TestSummary(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  *Msg
+		want string
+	}{
+		{"hello", &Msg{Kind: KindHello, ClientID: "host-1", ClientName: "alice"},
+			"hello alice (host-1)"},
+		{"welcome", &Msg{Kind: KindWelcome, Count: 2}, "welcome count=2"},
+		{"text clip", NewClip(MIMEText, "host-1", "alice", []byte("hello")),
+			"clip text/plain 5 B from alice (host-1): hello"},
+		{"image clip", NewClip(MIMEImage, "host-2", "bob", []byte{1, 2, 3}),
+			"clip image/png 3 B from bob (host-2)"},
+		{"web clip", NewClip(MIMEText, OriginWeb, OriginName, []byte("pushed")),
+			"clip text/plain 6 B from web: pushed"},
+		{"joined", &Msg{Kind: KindJoined, ClientID: "host-1", ClientName: "alice"},
+			"joined alice (host-1)"},
+		{"left id only", &Msg{Kind: KindLeft, ClientID: "host-1"}, "left host-1"},
+		{"unknown", &Msg{Kind: "surprise"}, "unknown kind=surprise"},
+	}
+	for _, c := range cases {
+		if got := c.msg.Summary(); got != c.want {
+			t.Errorf("%s: Summary() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSummaryStaysOneLineOnceLogged checks the contract the loggers rely on:
+// Summary may embed raw clipboard bytes, but logx.SingleLine — the single
+// place every record passes through — collapses them to one line.
+func TestSummaryStaysOneLineOnceLogged(t *testing.T) {
+	m := NewClip(MIMEText, "host-1", "alice", []byte("first\nsecond\r\nthird"))
+	got := logx.SingleLine(m.Summary())
+	if strings.ContainsAny(got, "\n\r") {
+		t.Fatalf("logged summary contains a line break: %q", got)
+	}
+	if !strings.Contains(got, `\n`) || !strings.Contains(got, `\r`) {
+		t.Fatalf("newlines were dropped rather than escaped: %q", got)
+	}
+}
+
+func TestSummaryTruncatesLongText(t *testing.T) {
+	got := NewClip(MIMEText, "h", "n", []byte(strings.Repeat("好", 200))).Summary()
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("long text not truncated: %q", got)
+	}
+	// "clip text/plain 600 B from n (h): " prefix plus 60 runes and the ellipsis.
+	if n := len([]rune(got)); n > 200 {
+		t.Fatalf("preview not bounded: %d runes", n)
 	}
 }

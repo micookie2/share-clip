@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -76,8 +79,8 @@ func send(t *testing.T, conn *websocket.Conn, m *protocol.Msg) {
 }
 
 // readMsg reads until the next clip/control message or the timeout. Returns
-// nil when no message arrived in time. Server pings and presence notices are
-// skipped.
+// nil when no message arrived in time. Presence notices are skipped. (Server
+// keepalive now runs on WebSocket control pings, which never surface here.)
 func readMsg(t *testing.T, conn *websocket.Conn, timeout time.Duration) *protocol.Msg {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -93,7 +96,7 @@ func readMsg(t *testing.T, conn *websocket.Conn, timeout time.Duration) *protoco
 			continue
 		}
 		switch m.Kind {
-		case protocol.KindPing, protocol.KindJoined, protocol.KindLeft:
+		case protocol.KindJoined, protocol.KindLeft:
 			continue
 		}
 		return m
@@ -232,6 +235,101 @@ func TestDuplicateClipIgnored(t *testing.T) {
 	}
 }
 
+// TestReencodedImageDuplicateNotRebroadcast covers the image duplicate filter
+// end to end: an image whose *bytes differ* but which decodes to the same
+// picture as the latest history entry (what a receiver echoes after a Windows
+// CF_DIB round-trip re-encodes it) must be ignored — not stored, not
+// broadcast — so clients never receive the same picture twice.
+func TestReencodedImageDuplicateNotRebroadcast(t *testing.T) {
+	s := startServer(t)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	defer s.Close()
+
+	c1 := dialClient(t, ts.URL, "id-a", "host-a")
+	c2 := dialClient(t, ts.URL, "id-b", "host-b")
+
+	orig := testPNG(t, 0)
+	reencoded := canonicalPNG(t, orig)
+	if bytes.Equal(orig, reencoded) {
+		t.Fatal("test PNGs must differ byte-wise to model a re-encoding")
+	}
+
+	send(t, c1, protocol.NewClip(protocol.MIMEImage, "id-a", "host-a", orig))
+	if m := readMsg(t, c2, 5*time.Second); m == nil || m.Kind != protocol.KindClip ||
+		!bytes.Equal(m.Payload, orig) {
+		t.Fatalf("c2 missed original image clip: %+v", m)
+	}
+
+	// Re-encoding of the same picture: nothing must be broadcast.
+	send(t, c1, protocol.NewClip(protocol.MIMEImage, "id-a", "host-a", reencoded))
+	if m := readMsg(t, c2, 400*time.Millisecond); m != nil {
+		t.Fatalf("re-encoded duplicate image was broadcast: %+v", m)
+	}
+
+	// The ignored echo left no history row.
+	hist, err := http.Get(ts.URL + "/api/history?limit=10&offset=0")
+	if err != nil {
+		t.Fatalf("GET history: %v", err)
+	}
+	defer hist.Body.Close()
+	var h struct {
+		Items []struct {
+			Kind string `json:"kind"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(hist.Body).Decode(&h); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(h.Items) != 1 || h.Items[0].Kind != "image" {
+		t.Fatalf("history = %+v, want a single image entry", h.Items)
+	}
+}
+
+// testPNG renders a small paletted picture; different shift values produce
+// different pixel patterns.
+func testPNG(t *testing.T, shift int) []byte {
+	t.Helper()
+	pal := color.Palette{
+		color.RGBA{R: 255, A: 255},
+		color.RGBA{G: 255, A: 255},
+		color.RGBA{B: 255, A: 255},
+		color.RGBA{R: 255, G: 255, A: 255},
+	}
+	pm := image.NewPaletted(image.Rect(0, 0, 4, 3), pal)
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 4; x++ {
+			pm.SetColorIndex(x, y, uint8((x+y+shift)%4))
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, pm); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// canonicalPNG re-encodes a PNG as an opaque RGBA image, modelling how the
+// same picture comes back from a Windows CF_DIB round-trip.
+func canonicalPNG(t *testing.T, data []byte) []byte {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rgba := image.NewRGBA(img.Bounds())
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			rgba.Set(x, y, img.At(x, y))
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, rgba); err != nil {
+		t.Fatalf("encode canonical: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func TestHistoryWebAndPush(t *testing.T) {
 	s := startServer(t)
 	ts := httptest.NewServer(s.Handler())
@@ -311,6 +409,67 @@ func TestHistoryWebAndPush(t *testing.T) {
 		if string(got.Payload) != text {
 			t.Fatalf("push payload mismatch")
 		}
+	}
+}
+
+// TestHeartbeatPing covers the WebSocket control-frame heartbeat: while a
+// registered session idles, its pings must be answered with pongs and the
+// session must still deliver clips afterwards. Keepalive frames never appear
+// as protocol messages, so this exercises the raw Conn.
+func TestHeartbeatPing(t *testing.T) {
+	s := startServer(t)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	defer s.Close()
+
+	c1 := dialClient(t, ts.URL, "id-a", "host-a")
+	c2 := dialClient(t, ts.URL, "id-b", "host-b")
+
+	// Ping needs a concurrent reader on c2 to observe the pong; that reader
+	// also drains broadcasts and reports the next clip.
+	clipCh := make(chan *protocol.Msg, 1)
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, data, err := c2.Read(ctx)
+			cancel()
+			if err != nil {
+				return
+			}
+			if m, perr := protocol.Parse(data, protocol.DefaultMaxPayload); perr == nil && m.Kind == protocol.KindClip {
+				select {
+				case clipCh <- m:
+				default:
+				}
+			}
+		}
+	}()
+	defer func() {
+		c2.CloseNow()
+		<-readDone
+	}()
+
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := c2.Ping(ctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("ping %d: %v", i+1, err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// The session must still be fully usable after the heartbeat round trips.
+	send(t, c1, protocol.NewClip(protocol.MIMEText, "id-a", "host-a", []byte("after heartbeat")))
+	select {
+	case m := <-clipCh:
+		if string(m.Payload) != "after heartbeat" {
+			t.Fatalf("clip after heartbeat mismatch: %q", m.Payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("clip did not arrive after heartbeats; session dropped?")
 	}
 }
 

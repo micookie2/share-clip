@@ -10,6 +10,17 @@ import (
 	"github.com/micookie2/share-clip/internal/protocol"
 )
 
+// Heartbeat cadence for registered sessions. Keepalive uses WebSocket
+// control pings (RFC 6455): the client answers automatically at the protocol
+// level, so a pong missing within pongWait means that direction of the link
+// is dead. pongWait must comfortably exceed any single frame write (see
+// writeRaw's 10s deadline), otherwise a large broadcast could look like a
+// missed pong.
+const (
+	pingEvery = 25 * time.Second
+	pongWait  = 10 * time.Second
+)
+
 // hub tracks the connected WebSocket clients.
 type hub struct {
 	mu      sync.Mutex
@@ -88,7 +99,7 @@ func (h *hub) broadcastAll(frame []byte) int {
 	}
 	h.mu.Unlock()
 	for _, c := range slow {
-		c.srv.logf("client %s (%s) too slow, disconnecting", c.name, c.id)
+		c.srv.logf("client %s too slow, disconnecting", c.label())
 		c.kick("send queue overflow")
 	}
 	return n
@@ -112,7 +123,7 @@ func (h *hub) broadcastOthers(frame []byte, except *client) int {
 	}
 	h.mu.Unlock()
 	for _, c := range slow {
-		c.srv.logf("client %s (%s) too slow, disconnecting", c.name, c.id)
+		c.srv.logf("client %s too slow, disconnecting", c.label())
 		c.kick("send queue overflow")
 	}
 	return n
@@ -160,6 +171,21 @@ func newClient(h *hub, s *Server, conn *websocket.Conn) *client {
 	}
 }
 
+// label renders the session for logs as "name (id)"; a session that has not
+// sent its hello yet has neither field set.
+func (c *client) label() string {
+	switch {
+	case c.name != "" && c.id != "":
+		return c.name + " (" + c.id + ")"
+	case c.name != "":
+		return c.name
+	case c.id != "":
+		return c.id
+	default:
+		return "unregistered"
+	}
+}
+
 // enqueue queues a frame for delivery, returning false when the client is too
 // slow to keep up (the caller then drops it).
 func (c *client) enqueue(frame []byte) bool {
@@ -171,24 +197,28 @@ func (c *client) enqueue(frame []byte) bool {
 	}
 }
 
-// writeLoop drains the outbound queue and periodically sends keepalive pings.
-// Any failure cancels the session so the read loop tears it down.
+// writeLoop drains the outbound queue and periodically probes the client with
+// a WebSocket control ping. Any failure cancels the session so the read loop
+// tears it down.
 func (c *client) writeLoop() {
-	ping := time.NewTicker(25 * time.Second)
+	ping := time.NewTicker(pingEvery)
 	defer ping.Stop()
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-ping.C:
-			if err := c.writeRaw(protocol.Msg{Kind: protocol.KindPing}.MustFrame(c.srv.maxPayload())); err != nil {
-				c.srv.logf("client %s: ping write failed: %v", c.name, err)
-				c.kick("write failure")
+			pctx, cancel := context.WithTimeout(c.ctx, pongWait)
+			err := c.conn.Ping(pctx)
+			cancel()
+			if err != nil {
+				c.srv.logf("client %s: heartbeat failed: %v", c.label(), err)
+				c.kick("heartbeat timeout")
 				return
 			}
 		case frame := <-c.send:
 			if err := c.writeRaw(frame); err != nil {
-				c.srv.logf("client %s: write failed: %v", c.name, err)
+				c.srv.logf("client %s: write failed: %v", c.label(), err)
 				c.kick("write failure")
 				return
 			}

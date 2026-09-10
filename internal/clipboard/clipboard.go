@@ -11,11 +11,21 @@
 //   - Windows: Win32 clipboard APIs via the stdlib syscall package. The OS
 //     exposes a clipboard sequence number, so every genuine copy action —
 //     even re-copying identical content — can be detected and re-shared.
-//   - Linux: delegates to xclip (X11) or wl-clipboard (Wayland), which must
-//     be installed. Those tools only expose content, not copy events, so the
-//     backend polls and identical re-copies cannot be told apart from "no
-//     change" (they are naturally de-duplicated). File copies are detected
-//     (file:// URI lists) and ignored: file transfer is out of scope.
+//   - Linux (X11): delegates reading/writing to xclip. Copies are detected
+//     event-driven through XFixes selection-owner notifications (falling back
+//     to polling when the extension is unavailable), and the formats the
+//     owner advertises (xclip TARGETS) drive the snapshot: an image is
+//     preferred over text like on Windows, and non-PNG image encodings are
+//     converted to PNG before sharing.
+//   - Linux (Wayland): delegates to wl-clipboard (wl-copy/wl-paste). Offered
+//     MIME types are enumerated with wl-paste --list-types when the installed
+//     version supports it (≥ 2.0), otherwise the snapshot falls back to a
+//     text-then-PNG guess. Wayland has no compositor-wide copy event channel
+//     (GNOME ships none; wlroots/KDE only via data-control protocols), so
+//     monitoring stays poll based.
+//
+// File copies are detected (file:// URI lists) and ignored: file transfer is
+// out of scope.
 package clipboard
 
 import (
@@ -183,22 +193,36 @@ func (w *Watcher) Stop() {
 }
 
 // ApplyRemote writes network-received content into the clipboard while arming
-// echo suppression: the next observation of that digest is recognized as our
+// echo suppression: the next observation of that content is recognized as our
 // own write and is not re-shared.
+//
+// The suppression key is the content the *platform* presents after the write,
+// not necessarily the bytes that were handed over. Writing a PNG to the
+// Windows clipboard stores it as a CF_DIB bitmap, and reading it back yields a
+// re-encoded PNG whose bytes usually differ from the original (same picture,
+// different encoding). Suppressing only the raw bytes would then miss the
+// echo: the received image would be re-shared once per machine and broadcast
+// back to everyone as a "duplicate receive". Snapshotting right after the
+// write captures the canonical form the watcher will actually observe, so the
+// echo is suppressed reliably. Platforms whose clipboard preserves bytes
+// exactly (Linux xclip/wl-clipboard, Windows text) simply observe the same
+// bytes and nothing changes.
 func (w *Watcher) ApplyRemote(c Content) error {
 	if c.Empty() {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	d := c.Digest()
-	w.suppressed = &d
 	if err := w.backend.Write(c); err != nil {
-		// The write failed, so the clipboard is unchanged; disarm so a later
-		// genuine local copy with the same digest is not swallowed.
-		w.suppressed = nil
+		// The write failed, so the clipboard is unchanged; do not arm any
+		// suppression that could swallow a later genuine local copy.
 		return err
 	}
+	d := c.Digest()
+	if rb, err := w.backend.Snapshot(); err == nil && !rb.Empty() {
+		d = rb.Digest()
+	}
+	w.suppressed = &d
 	return nil
 }
 

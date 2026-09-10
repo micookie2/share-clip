@@ -45,23 +45,38 @@ is silently ignored.
   (SQLite; last 500 entries kept by default, oldest trimmed automatically).
 - Incoming broadcasts and web pushes are **written to the local clipboard only**
   and never re-uploaded — that is what stops A↔B ping-pong loops. Your own real
-  re-copy still propagates normally.
+  re-copy still propagates normally. Echo suppression is keyed to the content the
+  local clipboard *actually presents* after the write, so even when Windows
+  stores a received PNG as a CF_DIB bitmap and hands it back re-encoded with
+  different bytes, the machine does not mistake it for a fresh local copy.
 - A copy carrying both text and an image is treated as **image first**. Windows
-  enumerates clipboard formats directly; on X11 we fall back to a "try image only
-  when text is empty" heuristic, so rare cases may miss the image.
-- **Duplicate filtering**: if a copy is byte-identical (same kind, same bytes) to
-  the **most recent** history entry, the server drops it — no write, no broadcast.
-  Windows' clipboard sequence number reports an identical re-copy as a change,
-  while Linux xclip/wl-paste polling (0.5–1s detection delay, tune with `-p`)
-  cannot tell them apart; filtering on the server makes both platforms behave
-  the same. Copying something different in between restores normal behaviour,
-  and two machines copying the same text back to back still broadcast only the
-  first one. Web "push" does not write history, so it is unaffected.
+  and Linux both enumerate the formats the clipboard owner actually offers
+  (CF_DIB on Windows; xclip `TARGETS` / `wl-paste --list-types` on Linux): an
+  image format wins over text, and non-PNG encodings (JPEG/GIF/BMP/TIFF/WebP)
+  are converted to PNG before sharing.
+- **Duplicate filtering**: if a copy duplicates the **most recent** history entry,
+  the server drops it — no write, no broadcast. Text duplicates mean byte-identical
+  payloads; image duplicates mean PNGs that *decode to the same picture*, so the
+  same image repackaged in a different PNG encoding (e.g. by a Windows CF_DIB
+  bitmap round-trip) is still broadcast only once — clients never receive the
+  same picture twice. Windows (clipboard sequence number) and Linux/X11 (XFixes
+  copy events) both report an identical re-copy as a change; Linux/Wayland only
+  has polling and cannot tell them apart; filtering on the server makes both
+  platforms behave the same. Copying something different in between
+  restores normal behaviour, and two machines copying the same content back to
+  back still broadcast only the first one. Web "push" does not write history, so
+  it is unaffected.
 - A client does not push its current clipboard on startup, and a newly joined
   client does not receive backlog history — use the web page to push old entries
   on demand.
 - **One log line per event**: clipboard text, machine names and errors are
   escaped before printing (`\n`, `\t` appear literally), so grep works.
+- **Message-level logging**: the server prints every frame it receives
+  (`[recv] …`) and every push it sends out (`[push] … -> N client(s)`), and the
+  client prints what it sends (`[send] …`) and receives (`[recv] …`) — hello,
+  welcome, joined/left presence, clip broadcasts and web pushes all appear
+  (heartbeats use WebSocket control-frame pings, so they never show up here),
+  with a short text preview per clip. `-q` silences all of it.
 - Plaintext, no authentication: designed for a trusted LAN.
 - Payload cap defaults to **32 MiB** (tune with `-m`); larger copies are ignored.
 
@@ -70,8 +85,8 @@ is silently ignored.
 | Platform | Dependency | Notes |
 |----------|------------|-------|
 | Windows 10/11 | none (pure Go syscall) | images read via CF_DIB, converted with our own DIB↔PNG codec |
-| Linux (X11) | `xclip` | `apt install xclip` / `dnf install xclip` |
-| Linux (Wayland) | `wl-clipboard` | e.g. `apt install wl-clipboard` |
+| Linux (X11) | `xclip` | copies detected via XFixes events (present on virtually every modern X server), polling only as fallback; `apt install xclip` |
+| Linux (Wayland) | `wl-clipboard` | wl-clipboard 2.x (`--list-types`) works best; no event channel on GNOME etc., so it polls at the `-p` interval; e.g. `apt install wl-clipboard` |
 
 Clients must run inside a graphical session (`DISPLAY` or `WAYLAND_DISPLAY`) and
 exit with an error otherwise. The server needs no desktop, so it is happy on an
@@ -84,8 +99,9 @@ dependencies: WebSocket library `github.com/coder/websocket` and the pure-Go
 SQLite driver `modernc.org/sqlite`.
 
 ```bash
-make build          # bin/shareclip-server + bin/shareclip-client (native)
-make build-windows  # cross-compile bin/*.exe (Windows amd64)
+make                # everything at once: native + Windows amd64 (4 files in bin/)
+make build          # native only: bin/shareclip-server + bin/shareclip-client
+make build-windows  # Windows only: cross-compile bin/*.exe (Windows amd64)
 # or manually:
 go build -o shareclip-server ./cmd/shareclip-server
 GOOS=windows GOARCH=amd64 go build -o shareclip-client.exe ./cmd/shareclip-client
@@ -167,7 +183,7 @@ Every option has a single-letter short form, and `-h` prints the full list.
 |-------|------|---------|-------------|
 | `-s` | `--server` | (required) | server address `host:port` |
 | `-n` | `--name` | hostname | machine name shown elsewhere |
-| `-p` | `--poll` | `1000` | clipboard polling interval in ms (Linux only) |
+| `-p` | `--poll` | `1000` | fallback monitoring interval in ms: X11 is event driven (XFixes) and only polls when events are unavailable; Wayland (no event channel) polls at this interval |
 | `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry |
 | `-q` | `--quiet` | false | less logging |
 | `-v` | `--version` | — | print version and build metadata (commit, build time, Go/platform) and exit |
@@ -213,7 +229,9 @@ cmd/shareclip-client/   client entry point
 internal/agent/         client logic: clipboard watch, send/receive, reconnect
 internal/clipboard/     cross-platform clipboard abstraction + watcher
   clipboard_windows.go  Win32: CF_UNICODETEXT / CF_DIB (stdlib syscall)
-  clipboard_linux.go    Linux: xclip / wl-clipboard
+  clipboard_linux.go    Linux: xclip / wl-clipboard; format listing, image
+                        first, non-PNG → PNG conversion
+  x11watch_linux.go     X11: XFixes copy-event listener (falls back to polling)
 internal/buildinfo/     version/commit/build time (-ldflags; logs, -v, web UI)
 internal/dib/           pure-Go DIB↔PNG codec (Windows images)
 internal/cli/           options with long name + single-letter alias sharing one var
@@ -237,10 +255,15 @@ clearing history.
 
 - Plaintext, unauthenticated — trusted LAN only. Use a VPN or terminate TLS
   yourself if the traffic leaves one.
-- On Linux, polling latency means an identical re-copy cannot be detected (see
-  behaviour above).
-- X11 cannot enumerate clipboard formats cheaply, so an image copy that also
-  carries text may occasionally be missed.
+- Wayland has no compositor-wide copy events (GNOME has none at all; KDE and
+  wlroots only with wl-clipboard 2.x and a data-control protocol), so Wayland
+  stays poll based: detection latency ≈ the `-p` interval and identical
+  re-copies are indistinguishable from "no change" (see behaviour above).
+- On X11, a program that copies and immediately exits loses its clipboard data
+  unless a clipboard manager takes over — event-driven monitoring only shrinks
+  that window, it cannot fully avoid it.
+- Image formats cover common web/office cases (PNG/JPEG/GIF/BMP/TIFF/WebP);
+  exotic ones (XPM, PSD, …) are still missed.
 - Web push always targets all online clients; no per-machine targeting yet.
 - Copies made while disconnected are not replayed after reconnecting — just copy
   again.

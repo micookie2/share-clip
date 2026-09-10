@@ -37,6 +37,12 @@ jobs:
             *"commit unknown"*|*"built unknown"*)
               echo "::error::make build 未注入构建信息：$out"; exit 1;;
           esac
+      # 默认 make 必须同时产出本机版与 Windows amd64 版（共 4 个文件）。
+      - name: make 默认目标产物自检
+        run: |
+          make
+          ls -1 bin/shareclip-server bin/shareclip-client \
+            bin/shareclip-server.exe bin/shareclip-client.exe
 
   # client/server 都要能在 Windows 上编译并跑通测试（剪贴板走 Win32 API）。
   windows:

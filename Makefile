@@ -22,14 +22,17 @@ endif
 
 .PHONY: all build build-windows test vet fmt icon icon-windows clean run-server version
 
-all: build
+# 默认目标：一次产出全部交付物 —— 本机版 + Windows amd64 版（bin/ 下 4 个文件）。
+# 只想出某一平台时用下面的细分目标：make build / make build-windows。
+all: build build-windows
 
+# 当前平台（本机）的二进制。
 build:
 	@mkdir -p $(BIN)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-server ./cmd/shareclip-server
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-client ./cmd/shareclip-client
 
-# Windows binaries can be cross-compiled from Linux/macOS or built natively.
+# Windows amd64 二进制，可从 Linux/macOS 交叉编译，也可在 Windows 本机编译。
 build-windows:
 	@mkdir -p $(BIN)
 	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-server.exe ./cmd/shareclip-server

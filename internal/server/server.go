@@ -37,7 +37,6 @@ const (
 	DefaultDBPath     = "shareclip.db"
 	DefaultHistory    = 500
 	DefaultMaxPayload = 32 << 20
-	readDeadline      = 90 * time.Second
 	helloDeadline     = 30 * time.Second
 )
 
@@ -181,40 +180,67 @@ func (s *Server) serveClient(c *client) {
 		c.cancel()
 		_ = c.conn.Close(websocket.StatusNormalClosure, "bye")
 		if c.registered && c.hub.remove(c) {
-			s.logf("client %s (%s) left (%d online)", c.name, c.id, c.hub.size())
-			c.hub.broadcastOthers(protocol.Msg{
+			n := c.hub.broadcastOthers(protocol.Msg{
 				Kind: protocol.KindLeft, ClientID: c.id, ClientName: c.name,
 			}.MustFrame(s.maxPayload()), c)
+			s.logf("[push] left %s -> %d client(s), %d online", c.label(), n, c.hub.size())
 			s.publishStatus()
 		}
 	}()
 	go c.writeLoop()
 
-	helloAt := time.Now()
-	for {
-		if !c.registered && time.Since(helloAt) > helloDeadline {
-			c.kick("no hello received")
+	// Phase 1: the client must send its hello within helloDeadline. The read
+	// is bounded here because an unregistered peer that only answers control
+	// pings would otherwise idle forever.
+	helloCtx, cancelHello := context.WithTimeout(c.ctx, helloDeadline)
+	defer cancelHello()
+	for !c.registered {
+		typ, data, err := c.conn.Read(helloCtx)
+		if err != nil {
+			if c.ctx.Err() == nil {
+				s.logf("client %s: connection closed before hello: %v", c.label(), err)
+			}
 			return
 		}
-		readCtx, cancel := context.WithTimeout(c.ctx, readDeadline)
-		typ, data, err := c.conn.Read(readCtx)
-		cancel()
+		if typ != websocket.MessageBinary {
+			s.logf("[recv] ignored non-binary frame (type=%d) from %s", typ, c.label())
+			continue
+		}
+		if !s.handleData(c, data) {
+			return
+		}
+	}
+	cancelHello()
+
+	// Phase 2: registered session. Reads are unbounded — liveness is verified
+	// by the control-frame heartbeat in writeLoop, and an idle session
+	// legitimately exchanges no data frames for a long time.
+	for {
+		typ, data, err := c.conn.Read(c.ctx)
 		if err != nil {
 			return
 		}
 		if typ != websocket.MessageBinary {
+			s.logf("[recv] ignored non-binary frame (type=%d) from %s", typ, c.label())
 			continue
 		}
-		m, err := protocol.Parse(data, s.maxPayload())
-		if err != nil {
-			s.logf("client %s: bad frame: %v", c.id, err)
-			c.kick("protocol violation")
-			return
-		}
-		if !s.dispatch(c, m) {
+		if !s.handleData(c, data) {
 			return
 		}
 	}
+}
+
+// handleData parses one binary data frame and dispatches it. It reports
+// whether the session should stay open.
+func (s *Server) handleData(c *client, data []byte) bool {
+	m, err := protocol.Parse(data, s.maxPayload())
+	if err != nil {
+		s.logf("[recv] bad frame from %s: %v", c.label(), err)
+		c.kick("protocol violation")
+		return false
+	}
+	s.logf("[recv] %s", m.Summary())
+	return s.dispatch(c, m)
 }
 
 // dispatch handles one message from a client. It returns false when the
@@ -235,7 +261,6 @@ func (s *Server) dispatch(c *client, m *protocol.Msg) bool {
 		}
 		c.registered = true
 		c.hub.add(c)
-		s.logf("client %s (%s) joined (%d online)", c.name, c.id, c.hub.size())
 		if err := c.writeFrame(protocol.Msg{
 			Kind: protocol.KindWelcome, ClientID: c.id, ClientName: c.name,
 			Count: c.hub.size(),
@@ -243,9 +268,11 @@ func (s *Server) dispatch(c *client, m *protocol.Msg) bool {
 			c.kick("welcome write failed")
 			return false
 		}
-		c.hub.broadcastOthers(protocol.Msg{
+		s.logf("[send] welcome (count=%d) -> %s", c.hub.size(), c.label())
+		n := c.hub.broadcastOthers(protocol.Msg{
 			Kind: protocol.KindJoined, ClientID: c.id, ClientName: c.name,
 		}.MustFrame(s.maxPayload()), c)
+		s.logf("[push] joined %s -> %d client(s), %d online", c.label(), n, c.hub.size())
 		s.publishStatus()
 		return true
 
@@ -265,14 +292,13 @@ func (s *Server) dispatch(c *client, m *protocol.Msg) bool {
 		m.ClientName = c.name
 		entryID, stored, err := s.store.Add(kind, m.MIME, c.id, c.name, m.Payload)
 		if err != nil {
-			s.logf("store: %v", err)
+			s.logf("[store] %v", err)
 			return true
 		}
 		if !stored {
-			s.logf("[clip] %s repeated latest %s (%d B), ignored", c.name, kind, len(m.Payload))
+			s.logf("[drop] %s repeated the latest entry, ignored", m.Summary())
 			return true
 		}
-		s.logf("[clip] %s shared %s (%d B, history #%d)", c.name, kind, len(m.Payload), entryID)
 		s.events.publish("clip", itemEntry{
 			ID:         entryID,
 			Kind:       kind,
@@ -283,10 +309,8 @@ func (s *Server) dispatch(c *client, m *protocol.Msg) bool {
 			Time:       time.Now().UTC().Format(time.RFC3339),
 			Preview:    textPreview(kind, m.Payload),
 		})
-		c.hub.broadcastOthers(m.MustFrame(s.maxPayload()), c)
-		return true
-
-	case protocol.KindPing:
+		n := c.hub.broadcastOthers(m.MustFrame(s.maxPayload()), c)
+		s.logf("[push] %s -> %d client(s) (history #%d)", m.Summary(), n, entryID)
 		return true
 
 	default:
@@ -413,7 +437,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := protocol.NewClip(e.MIME, protocol.OriginWeb, protocol.OriginName, payload)
 	n := s.hub.broadcastAll(msg.MustFrame(s.maxPayload()))
-	s.logf("[push] entry #%d (%s, %d B) pushed to %d client(s)", id, e.Kind, len(payload), n)
+	s.logf("[push] %s -> %d client(s) (entry #%d)", msg.Summary(), n, id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "clients": n})
 }
 

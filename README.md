@@ -41,19 +41,30 @@
 - 任一 client 复制文本或图片 → server 立即广播给**除发送者外**所有在线 client，
   并把该条写入历史（SQLite，默认保留最近 500 条，超出自动清理最旧）。
 - 收到广播/Web 推送后，只把内容**写入本机剪贴板，不再回传**（防止 A↔B 两台
-  机器互相广播死循环）；你本人真实的再次复制不受影响。
-- 同时携带文本与图片的复制以**图片优先**（Windows 可直接枚举剪贴板格式；
-  X11 下按“文本为空才尝试图片”的启发式，个别场景可能漏发图片）。
-- **重复内容过滤**：本次复制与**最近一条**历史内容完全相同（同类型 + 同字节）
-  时，server 直接忽略——不入库、也不广播。Windows 上系统剪贴板序列号会让
-  “相同内容再次复制”照常上报、Linux 的 xclip/wl-paste 轮询（检测延迟约
-  0.5–1 秒，`-p` 可调）则无法识别，统一放到 server 端过滤后两个平台行为
-  一致。中间复制过任何不同内容后，再复制回旧内容仍会正常广播；不同机器上
-  连续复制同一段内容同样只广播第一次。Web 页“推送”不写历史，不受影响。
+  机器互相广播死循环）；你本人真实的再次复制不受影响。回环抑制按“写入后本机
+  剪贴板实际呈现的内容”识别，因此即使 Windows 把收到的 PNG 经 CF_DIB 位图
+  往返后以不同字节重新编码，本机也不会把它当成本地新复制而回传。
+- 同时携带文本与图片的复制以**图片优先**。Windows 与 Linux 都会先枚举剪贴板
+  上实际提供的格式（Windows 的 CF_DIB、Linux 的 xclip TARGETS / wl-paste
+  --list-types）：有图片格式就发图片，图片缺失或无法解码才退回文本；非 PNG
+  编码（JPEG/GIF/BMP/TIFF/WebP）会在发送前转成 PNG。
+- **重复内容过滤**：本次复制与**最近一条**历史内容相同时，server 直接忽略——
+  不入库、也不广播。文本按“同类型 + 同字节”判定，图片按“解码后的画面相同”
+  判定：同一张图即使被另一台机器（例如 Windows 的 CF_DIB 位图往返）以不同
+  的 PNG 编码重新打包，也只会广播一次，不会出现“重复收到同一张图”。
+  Windows 与 Linux/X11（XFixes 复制事件）都会把“相同内容再次复制”照常上报，
+  Linux/Wayland 只有轮询可用、无法区分，统一放到 server 端过滤后行为一致。
+  中间复制过任何不同内容后，再复制回旧内容仍会正常广播；不同机器上连续复制
+  同一段内容同样只广播第一次。Web 页“推送”不写历史，不受影响。
 - client 启动时不会自动推送当前剪贴板，新加入的 client 也不会自动收到历史；
   需要旧内容时在 Web 页手动推送。
 - **日志一行一条**：剪贴板内容、机器名等可能带换行的文本在打印前统一转义
   （`\n`、`\t` 等按字面量显示），方便直接 grep server 日志。
+- **逐消息日志**：server 会打印收到的每一帧（`[recv] …`）以及发出的每次推送
+  （`[push] … -> N client(s)`），client 会打印自己发出的（`[send] …`）与收到的
+  （`[recv] …`）消息——hello/welcome、上下线、剪贴板广播与 Web 推送都会记录，
+  文本内容附带简短预览；心跳走 WebSocket 控制帧 ping/pong，不会出现在这里；
+  `-q` 可全部关掉。
 - 明文传输、无鉴权，默认面向可信局域网。
 - 单条内容上限默认 **32 MiB**（`-m` 可调），超限的复制会被忽略。
 
@@ -62,8 +73,8 @@
 | 平台 | 依赖 | 说明 |
 |------|------|------|
 | Windows 10/11 | 无（纯 Go syscall） | 图片经 CF_DIB 读入，自研 DIB↔PNG 转换 |
-| Linux (X11) | `xclip` | `apt install xclip` / `dnf install xclip` |
-| Linux (Wayland) | `wl-clipboard` | `apt install wl-clipboard` 等 |
+| Linux (X11) | `xclip` | 复制检测走 XFixes 事件（几乎所有现代 X server 自带），事件不可用时退回轮询；`apt install xclip` |
+| Linux (Wayland) | `wl-clipboard` | 支持 `--list-types` 的 wl-clipboard 2.x 体验最佳；GNOME 等无事件通道，按 `-p` 间隔轮询；`apt install wl-clipboard` |
 
 client 需要运行在有图形会话（`DISPLAY` 或 `WAYLAND_DISPLAY`）的桌面环境中；
 无图形会话会直接报错退出。server 无桌面要求，适合放常开机器/NAS。
@@ -74,8 +85,9 @@ client 需要运行在有图形会话（`DISPLAY` 或 `WAYLAND_DISPLAY`）的桌
 库 `github.com/coder/websocket`、纯 Go SQLite 驱动 `modernc.org/sqlite`。
 
 ```bash
-make build          # 生成 bin/shareclip-server 与 bin/shareclip-client（Linux）
-make build-windows  # 交叉编译 bin/*.exe（Windows amd64）
+make                # 一次生成全部：本机版 + Windows amd64 版（bin/ 下共 4 个文件）
+make build          # 仅本机：bin/shareclip-server 与 bin/shareclip-client
+make build-windows  # 仅 Windows：交叉编译 bin/*.exe（Windows amd64）
 # 或手动：
 go build -o shareclip-server ./cmd/shareclip-server
 GOOS=windows GOARCH=amd64 go build -o shareclip-client.exe ./cmd/shareclip-client
@@ -157,7 +169,7 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 |------|--------|------|------|
 | `-s` | `--server` | （必填） | server 地址 `host:port` |
 | `-n` | `--name` | 主机名 | 在其它机器/Web 页显示的机器名 |
-| `-p` | `--poll` | `1000` | 剪贴板轮询间隔毫秒（Linux 生效） |
+| `-p` | `--poll` | `1000` | 监听兜底轮询间隔毫秒：X11 默认由 XFixes 复制事件驱动，事件不可用才按此间隔；Wayland（无事件通道）按此间隔 |
 | `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
 | `-q` | `--quiet` | false | 减少日志 |
 | `-v` | `--version` | — | 打印版本号与构建信息（commit、构建时间、Go 版本/平台）后退出 |
@@ -198,7 +210,8 @@ cmd/shareclip-client/   client 入口
 internal/agent/         client 主逻辑：监听剪切板、收发、自动重连
 internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语义）
   clipboard_windows.go  Win32：CF_UNICODETEXT / CF_DIB（stdlib syscall）
-  clipboard_linux.go    Linux：xclip / wl-clipboard
+  clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+图优先+多格式转 PNG
+  x11watch_linux.go     X11：XFixes 复制事件监听（事件驱动，不可用时退回轮询）
 internal/buildinfo/     版本号/commit/构建时间（-ldflags 注入，日志、-v、Web 共用）
 internal/dib/           纯 Go DIB↔PNG 编解码（Windows 图片用）
 internal/cli/           命令行选项：长写法 + 单字母简写共用一个变量
@@ -220,8 +233,13 @@ e2e 测试用真实的 WebSocket 连接验证：广播给除发送者外所有 c
 ## 已知限制（有意为之，v1 范围）
 
 - 明文、无鉴权：仅适合可信局域网；跨公网请自行加 VPN/TLS。
-- Linux 轮询延迟与“相同内容重复复制”无法识别（见上文行为约定）。
-- X11 下无法廉价枚举剪贴板格式，偶尔会漏发“同时带文本的图片复制”。
+- Wayland 无合成器级复制事件（GNOME 完全没有，KDE/wlroots 也只在装了
+  wl-clipboard 2.x 且有 data-control 协议时才支持），因此 Wayland 侧仍是轮询：
+  检测延迟 ≈ `-p` 间隔，“相同内容再次复制”无法识别（见上文行为约定）。
+- X11 下若复制方程序“复制后立即退出”且桌面没有剪贴板管理器接管，内容会随
+  程序退出而消失——事件驱动也只能把漏检窗口缩到最小，无法完全避免。
+- 图片格式覆盖常见 Web/办公场景（PNG/JPEG/GIF/BMP/TIFF/WebP），小众格式
+  （XPM、PSD 等）仍会漏。
 - Web 推送只能推送到全部在线 client，暂不支持指定某台机器。
 - 断线期间本机复制的内容不会补发（重连后重新复制即可）。
 - 历史仅展示；文本/图片之外的格式（如文件列表、富文本 HTML）不处理。

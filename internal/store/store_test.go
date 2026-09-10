@@ -3,6 +3,9 @@ package store
 import (
 	"bytes"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"path/filepath"
 	"testing"
 )
@@ -133,6 +136,87 @@ func TestAddIgnoresConsecutiveDuplicates(t *testing.T) {
 	if _, stored, _ := s.Add(KindText, "text/plain", "z", "host-z", []byte("same")); stored {
 		t.Fatal("same content from another host should be ignored")
 	}
+}
+
+// TestAddIgnoresReencodedDuplicateImage covers the image duplicate filter:
+// two PNG encodings of the *same picture* count as duplicates even though
+// their bytes differ (a Windows CF_DIB round-trip re-encodes a received PNG,
+// so a byte-only comparison would let the echo through).
+func TestAddIgnoresReencodedDuplicateImage(t *testing.T) {
+	s := openTest(t, 500)
+	orig := testPNG(t, 0)
+	canon := canonicalPNG(t, orig)
+	if bytes.Equal(orig, canon) {
+		t.Fatal("test PNGs must differ byte-wise to model a re-encoding")
+	}
+	if _, stored, err := s.Add(KindImage, "image/png", "a", "host-a", orig); !stored || err != nil {
+		t.Fatalf("first image Add: stored=%v err=%v", stored, err)
+	}
+	// Re-encoding of the same picture right after: ignored, no row added.
+	if id, stored, err := s.Add(KindImage, "image/png", "b", "host-b", canon); stored || id != 0 || err != nil {
+		t.Fatalf("re-encoded duplicate stored: id=%d stored=%v err=%v", id, stored, err)
+	}
+	// A genuinely different picture stores.
+	other := testPNG(t, 1)
+	if bytes.Equal(other, orig) || bytes.Equal(other, canon) {
+		t.Fatal("test pictures must differ")
+	}
+	if _, stored, _ := s.Add(KindImage, "image/png", "a", "host-a", other); !stored {
+		t.Fatal("different picture reported as duplicate")
+	}
+	// Another encoding of the older picture after an interrupting entry
+	// stores again (only consecutive duplicates are filtered).
+	if _, stored, _ := s.Add(KindImage, "image/png", "a", "host-a", canon); !stored {
+		t.Fatal("stale same-picture image reported as duplicate")
+	}
+	items, _ := s.Recent(50, 0)
+	if len(items) != 3 {
+		t.Fatalf("expected 3 stored rows, got %d", len(items))
+	}
+}
+
+// testPNG renders a small paletted picture; different shift values produce
+// different pixel patterns.
+func testPNG(t *testing.T, shift int) []byte {
+	t.Helper()
+	pal := color.Palette{
+		color.RGBA{R: 255, A: 255},
+		color.RGBA{G: 255, A: 255},
+		color.RGBA{B: 255, A: 255},
+		color.RGBA{R: 255, G: 255, A: 255},
+	}
+	pm := image.NewPaletted(image.Rect(0, 0, 4, 3), pal)
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 4; x++ {
+			pm.SetColorIndex(x, y, uint8((x+y+shift)%4))
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, pm); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// canonicalPNG re-encodes a PNG as an opaque RGBA image, modelling how the
+// same picture comes back from a Windows CF_DIB round-trip.
+func canonicalPNG(t *testing.T, data []byte) []byte {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rgba := image.NewRGBA(img.Bounds())
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			rgba.Set(x, y, img.At(x, y))
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, rgba); err != nil {
+		t.Fatalf("encode canonical: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func TestClear(t *testing.T) {

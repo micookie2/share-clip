@@ -7,6 +7,11 @@
     </linearGradient>
   </defs>
 
+  <!-- White rounded plate behind the mark: the main area gets a solid white
+       background (readable on any wallpaper), while only the ~1.4 % rim and
+       the rounded corners stay transparent. -->
+  <rect x="317" y="271" width="683" height="683" rx="150" ry="150" fill="#FFFFFF"/>
+
   <!-- clipboard outline (open at top for the clip, cut at bottom-right for the share badge) -->
   <g fill="none" stroke="url(#scBlue)" stroke-width="33">
     <path stroke-linecap="butt" d="M 483 410.5 L 467.5 410.5 A 45 45 0 0 0 422.5 455.5 L 422.5 824.5 A 49 49 0 0 0 471.5 873.5 L 671.5 873.5"/>

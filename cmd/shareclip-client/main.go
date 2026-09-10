@@ -23,7 +23,7 @@ func main() {
 	var (
 		serverAddr = fs.String("s", "server", "", "share-clip server 地址，如 192.168.1.10:9000（必填）")
 		name       = fs.String("n", "name", "", "本机显示名（默认使用主机名）")
-		pollMs     = fs.Int("p", "poll", 1000, "剪贴板轮询间隔（毫秒）；Linux 生效，Windows 由系统事件驱动")
+		pollMs     = fs.Int("p", "poll", 1000, "剪贴板监听兜底轮询间隔（毫秒）：X11 默认由 XFixes 复制事件驱动，仅事件不可用时按此轮询；Wayland/GNOME 等无事件通道的平台按此轮询")
 		maxPayload = fs.Int("m", "max-payload", protocol.DefaultMaxPayload, "单条剪贴板内容最大字节数")
 		quiet      = fs.Bool("q", "quiet", false, "减少日志输出")
 		showVer    = fs.Bool("v", "version", false, "显示版本号与构建信息后退出")
