@@ -33,10 +33,18 @@ build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-client ./cmd/shareclip-client
 
 # Windows amd64 二进制，可从 Linux/macOS 交叉编译，也可在 Windows 本机编译。
+#
+# 客户端额外按 GUI 子系统链接（-H=windowsgui）：GUI 子系统的进程不会被分配控制台，
+# 双击运行时不会冒出终端窗口（Windows 11 默认终端是 Windows Terminal 时，控制台子
+# 系统的「先建窗口再隐藏」会留下一个可见页签）。从 cmd/PowerShell 里启动时程序会
+# 自己附着到那个终端，-v 与 --console 的输出照旧看得见——见
+# cmd/shareclip-client/console_windows.go。server 是终端里的服务程序，保持控制台子系统。
+WIN_CLIENT_LDFLAGS := -H=windowsgui
+
 build-windows:
 	@mkdir -p $(BIN)
 	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-server.exe ./cmd/shareclip-server
-	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/shareclip-client.exe ./cmd/shareclip-client
+	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS) $(WIN_CLIENT_LDFLAGS)" -o $(BIN)/shareclip-client.exe ./cmd/shareclip-client
 
 # 打印本次会注入的构建信息（Release 前自检用）。
 version:

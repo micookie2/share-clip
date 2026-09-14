@@ -113,9 +113,9 @@ client 的剪贴板监听需要图形会话（`DISPLAY` 或 `WAYLAND_DISPLAY`）
 make                # 一次生成全部：本机版 + Windows amd64 版（bin/ 下共 4 个文件）
 make build          # 仅本机：bin/shareclip-server 与 bin/shareclip-client
 make build-windows  # 仅 Windows：交叉编译 bin/*.exe（Windows amd64）
-# 或手动：
+# 或手动（Windows 客户端要带 -H=windowsgui 才是 GUI 子系统，双击不会开终端）：
 go build -o shareclip-server ./cmd/shareclip-server
-GOOS=windows GOARCH=amd64 go build -o shareclip-client.exe ./cmd/shareclip-client
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui" -o shareclip-client.exe ./cmd/shareclip-client
 ```
 
 不想 clone 也可以直接装（二进制名即目录名）：
@@ -274,8 +274,14 @@ client 侧填过的 key 会保存在它的配置文件里（见下文桌面模�
 - **单实例**：再次双击时会先探测固定端口 `127.0.0.1:9210` 上是否已有 share-clip
   客户端在跑，有就只把它的页面重新打开，不再起第二个进程；该端口被别的程序占用
   时本地界面会自动退到随机端口（日志里有提示），此时再次双击会起第二个进程。
-- **Windows**：客户端仍按控制台子系统编译（`-v`、在终端里运行照常有输出），
-  桌面模式会隐藏双击时系统分配的控制台窗口；从已有终端启动时不会隐藏那个终端。
+- **Windows**：客户端按 **GUI 子系统**链接（`make build-windows` 会加
+  `-H=windowsgui`），双击运行时系统根本不会给它分配控制台，托盘图标背后没有任何
+  终端窗口（控制台子系统的老做法是「先建窗口再隐藏」，在把 Windows Terminal 设为
+  默认终端的 Windows 11 上藏不干净，会留下一个可见页签）。需要输出时客户端会自己
+  附着到父终端的控制台：从 cmd/PowerShell 里跑 `-v`、`-s ...`、`--console` 照常有
+  输出；真没有终端却又要求控制台模式时，它才自己开一个。绕过 Makefile 直接
+  `go build`/`go install` 得到的是控制台子系统版本，功能一样（双击时退回隐藏黑窗口，
+  在 Windows 11 默认终端下可能留下终端窗口），要干净的托盘体验请用 `make build-windows`。
 - **Linux**：托盘走 freedesktop **StatusNotifierItem** 协议（D-Bus 会话总线，
   由 `fyne.io/systray` 实现），需要支持它的桌面面板（KDE、XFCE、MATE、Cinnamon、
   GNOME + AppIndicator 扩展等）。检测不到会话总线时客户端照常运行，只是少了托盘

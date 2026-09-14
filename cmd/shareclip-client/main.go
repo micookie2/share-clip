@@ -38,6 +38,11 @@ const defaultUIAddr = "127.0.0.1:9210"
 const logFileMaxBytes = 2 << 20 // 2 MiB
 
 func main() {
+	// 先把标准流安顿好再解析参数：-h/-v 与参数报错都要有地方可打印。
+	// Windows 上客户端是 GUI 子系统的可执行文件，默认没有控制台（见
+	// console_windows.go），这一步会按需附着到父终端或自己开一个。
+	prepareConsole()
+
 	build := buildinfo.Get()
 	fs := cli.New("shareclip-client")
 	var (
@@ -100,6 +105,9 @@ server 默认每次启动会生成一个访问 key 并打印在它的日志里�
 		}
 		return
 	}
+	// 控制台模式：日志就打在这里。GUI 子系统的构建被双击运行且没有任何父控制台时
+	// 连一个终端都没有，这时候自己开一个，总比日志哪儿都看不见强。
+	ensureConsole()
 	if err := runConsole(ctx, build, *serverAddr, *key, *name, *pollMs, *maxPayload, *quiet); err != nil {
 		logx.Fatalf("client 退出: %v", err)
 	}
@@ -123,10 +131,6 @@ type desktopFlags struct {
 // runDesktop 是托盘 + 本地界面的运行方式，也是双击启动时的默认行为：
 // 先读保存的配置（缺省值兜底），再拉起 agent、本地界面与托盘。
 func runDesktop(parent context.Context, build buildinfo.Info, f desktopFlags) error {
-	// 桌面模式没有可见的控制台：藏掉双击时系统为控制台程序分配的黑窗口。
-	// 从已有终端里启动时会检测到共享控制台，不会把用户的终端一起藏了。
-	hideConsoleWindow()
-
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 

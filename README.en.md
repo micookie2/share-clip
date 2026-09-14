@@ -135,9 +135,10 @@ v1.12.2 (pure Go on both Windows and Linux — no CGO/GTK, no extra build tags).
 make                # everything at once: native + Windows amd64 (4 files in bin/)
 make build          # native only: bin/shareclip-server + bin/shareclip-client
 make build-windows  # Windows only: cross-compile bin/*.exe (Windows amd64)
-# or manually:
+# or manually (the Windows client needs -H=windowsgui to be GUI-subsystem,
+# so a double-click opens no terminal):
 go build -o shareclip-server ./cmd/shareclip-server
-GOOS=windows GOARCH=amd64 go build -o shareclip-client.exe ./cmd/shareclip-client
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui" -o shareclip-client.exe ./cmd/shareclip-client
 ```
 
 You can also install straight from the module path (binary name = directory name):
@@ -317,10 +318,19 @@ line win over the saved config).
   instead of starting a second process; if something else holds that port the UI
   falls back to a random port (noted in the log), and a second double-click then
   does start a second process.
-- **Windows**: the client still builds as a console program (`-v` and running it
-  from a terminal keep working), and desktop mode hides the console window the
-  system allocates on double-click; launched from an existing terminal, that
-  terminal is left visible.
+- **Windows**: the client is linked as a **GUI-subsystem** binary
+  (`make build-windows` passes `-H=windowsgui`), so Windows never allocates a
+  console for it and no terminal window sits behind the tray icon (the old
+  console-subsystem trick — create the window, then hide it — does not hide
+  cleanly on Windows 11 with Windows Terminal as the default terminal, leaving a
+  visible tab). When output is needed the client attaches to the parent console,
+  so `-v`, `-s ...` and `--console` run from cmd/PowerShell still print there;
+  only when console mode is requested with no terminal around does it allocate
+  one of its own. A plain `go build`/`go install` (bypassing the Makefile) yields
+  the console-subsystem build: same features, falling back to hiding its black
+  window on double-click, which may still leave a terminal window on Windows 11
+  with the default terminal — use `make build-windows` for the clean tray
+  experience.
 - **Linux**: the tray uses the freedesktop **StatusNotifierItem** protocol over
   the D-Bus session bus (via `fyne.io/systray`), so it needs a desktop panel that
   supports it (KDE, XFCE, MATE, Cinnamon, GNOME with an AppIndicator extension,
