@@ -7,20 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"image/png"
+	"runtime"
 	"syscall"
 	"time"
 	"unicode/utf16"
 	"unsafe"
 
 	"github.com/micookie2/share-clip/internal/dib"
-)
-
-// Win32 clipboard format identifiers (winuser.h).
-const (
-	cfText        = 1  // CF_TEXT
-	cfBitmap      = 2  // CF_BITMAP
-	cfDIB         = 8  // CF_DIB
-	cfUnicodeText = 13 // CF_UNICODETEXT
 )
 
 var (
@@ -68,92 +61,51 @@ func NewBackend(pollIntervalMs int) (Backend, error) {
 	return &winBackend{}, nil
 }
 
-// Snapshot reads the current clipboard. Image content is preferred over text;
-// if the bitmap cannot be decoded but text is present, the text is returned.
-// When the clipboard also offers CF_HTML, the rich-text rendition is captured
-// alongside the plain text.
+// Snapshot reads the current clipboard with a text-first policy: usable plain
+// text (CF_UNICODETEXT) is what the user copied, even when the app also offers
+// an image rendition of it (Excel cell/range copies offer text, HTML and a
+// picture). The image format is only read when there is no usable text, so a
+// text copy is shared as text and Excel is not asked to render its delayed
+// picture. When CF_HTML is offered alongside text, the rich-text rendition is
+// captured too. A single unreadable format does not abort the snapshot; the
+// remaining formats are still tried.
+//
+// Only raw bytes are read while the clipboard is open; decoding/PNG-encoding a
+// bitmap happens afterwards in windowsSnapshotContent, so a large image copy
+// does not keep the clipboard locked (and block other applications) across the
+// expensive part.
 func (b *winBackend) Snapshot() (Content, error) {
+	var textContent Content
 	var rawDIB []byte
-	var rawText []byte
-	var rawHTML []byte
-	var hasText bool
-
 	err := withClipboard(func() error {
-		seen := map[uint32]bool{}
+		src := clipboardSource{
+			seen:       make(map[uint32]bool),
+			htmlFormat: cfHTML,
+			read:       readGlobal,
+		}
 		format := uint32(0)
 		for {
 			r, _, _ := procEnumClipboardFormats.Call(uintptr(format))
 			if r == 0 {
 				break
 			}
-			seen[uint32(r)] = true
-			format = uint32(r)
-		}
-		if seen[cfDIB] {
-			data, err := readGlobal(cfDIB)
-			if err != nil {
-				return err
+			next := uint32(r)
+			if !src.seen[next] {
+				src.order = append(src.order, next)
 			}
-			rawDIB = data
+			src.seen[next] = true
+			format = next
 		}
-		if seen[cfUnicodeText] {
-			data, err := readGlobal(cfUnicodeText)
-			if err != nil {
-				return err
-			}
-			rawText = data
-			hasText = len(data) > 0
-		}
-		if cfHTML != 0 && seen[cfHTML] {
-			data, err := readGlobal(cfHTML)
-			if err != nil {
-				return err
-			}
-			rawHTML = data
-		}
-		return nil
+		// Reading formats requires the clipboard to stay open; the DIB is only
+		// copied here and decoded after withClipboard has closed the clipboard.
+		var serr error
+		textContent, rawDIB, serr = snapshotFromFormats(src)
+		return serr
 	})
 	if err != nil {
 		return Content{}, err
 	}
-
-	if len(rawDIB) > 0 {
-		img, derr := dib.Decode(rawDIB)
-		if derr == nil {
-			var buf bytes.Buffer
-			if err := png.Encode(&buf, img); err != nil {
-				return Content{}, fmt.Errorf("clipboard: encode png: %w", err)
-			}
-			return Content{Kind: KindImage, PNG: buf.Bytes()}, nil
-		}
-		if !hasText {
-			return Content{}, fmt.Errorf("clipboard: decode dib: %v", derr)
-		}
-		// Fall through to text below.
-	}
-
-	if hasText {
-		text := utf16BytesToString(rawText)
-		if text == "" || IsFileArtifact(text) {
-			return Content{}, nil // nothing shareable
-		}
-		html, _ := htmlFromCFHTML(rawHTML)
-		return Content{Kind: KindText, Text: text, HTML: html}, nil
-	}
-	return Content{}, nil
-}
-
-// htmlFromCFHTML extracts the fragment from a CF_HTML block, returning "" when
-// the block is empty or not recognisable.
-func htmlFromCFHTML(raw []byte) (string, bool) {
-	if len(raw) == 0 {
-		return "", false
-	}
-	frag, ok := cfhtmlFragment(raw)
-	if !ok {
-		return "", false
-	}
-	return string(frag), true
+	return windowsSnapshotContent(textContent, rawDIB)
 }
 
 // Write puts text or image content on the clipboard.
@@ -267,6 +219,17 @@ func (b *winBackend) WaitForEvent(stop <-chan struct{}) bool {
 // --- Win32 plumbing ---------------------------------------------------------
 
 func withClipboard(fn func() error) error {
+	// Win32 clipboard ownership is bound to the OS thread that called
+	// OpenClipboard: only that thread's CloseClipboard releases it. A Go
+	// goroutine may migrate between OS threads between (or even inside) the
+	// OpenClipboard..CloseClipboard calls; if that happens CloseClipboard runs
+	// on a different thread and the clipboard stays open forever — blocking
+	// every other application's clipboard access until this process exits.
+	// Pinning the goroutine to its thread for the whole open scope guarantees
+	// OpenClipboard and CloseClipboard run on the same thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	// OpenClipboard fails while another process holds the clipboard open;
 	// retry briefly before giving up.
 	var lastErr error
@@ -338,32 +301,4 @@ func allocAndCopy(data []byte) (uintptr, error) {
 func clipboardSequenceNumber() uint32 {
 	r, _, _ := procGetClipboardSeqNumber.Call()
 	return uint32(r)
-}
-
-func utf16BytesToString(raw []byte) string {
-	if len(raw)%2 != 0 {
-		raw = raw[:len(raw)-1]
-	}
-	n := len(raw) / 2
-	u16 := make([]uint16, n)
-	for i := 0; i < n; i++ {
-		u16[i] = uint16(raw[2*i]) | uint16(raw[2*i+1])<<8
-	}
-	// Trim at the first NUL terminator, if any.
-	for i, u := range u16 {
-		if u == 0 {
-			u16 = u16[:i]
-			break
-		}
-	}
-	return string(utf16.Decode(u16))
-}
-
-func uint16Bytes(u16 []uint16) []byte {
-	raw := make([]byte, len(u16)*2)
-	for i, u := range u16 {
-		raw[2*i] = byte(u)
-		raw[2*i+1] = byte(u >> 8)
-	}
-	return raw
 }

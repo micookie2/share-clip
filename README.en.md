@@ -58,16 +58,27 @@ its formatting while pasting into a plain-text field still yields plain text.
   local clipboard *actually presents* after the write, so even when Windows
   stores a received PNG as a CF_DIB bitmap and hands it back re-encoded with
   different bytes, the machine does not mistake it for a fresh local copy.
-- A copy carrying both text and an image is treated as **image first**. Windows
-  and Linux both enumerate the formats the clipboard owner actually offers
-  (CF_DIB on Windows; xclip `TARGETS` / `wl-paste --list-types` on Linux): an
-  image format wins over text, and non-PNG encodings (JPEG/GIF/BMP/TIFF/WebP)
-  are converted to PNG before sharing.
+- A copy carrying both text and an image is treated as **text first**: when
+  usable text is present (non-empty and not a file-URI list) it is synced — with
+  the HTML rendition attached when `text/html` is offered — and an image is read
+  only when there is no usable text (screenshots, image editors); non-PNG
+  encodings (JPEG/GIF/BMP/TIFF/WebP) are converted to PNG before sharing (that
+  conversion covers Linux image targets; Windows only reads CF_DIB and always
+  re-encodes it to PNG). Windows and Linux both enumerate the formats the
+  clipboard owner actually offers (CF_DIB on Windows; xclip `TARGETS` /
+  `wl-paste --list-types` on Linux), and the image target is never fetched while
+  text wins, so an owner's delayed rendering is not forced. Why:
+  Excel/LibreOffice/WPS put a rendered picture of the copied cells next to the
+  real text, and image-first made a copied text paste as a picture on the other
+  machine. The trade-off: the rare picture copy that also offers text now syncs
+  as text.
 - **Own-copy protection**: if a peer sends this machine's own recent copy straight
   back — either unchanged or downgraded to plain text — the client ignores it
   instead of overwriting the local clipboard. Otherwise a rich copy could turn
   into plain text locally right after copying, because the echoed plain text
-  replaced the HTML on the clipboard.
+  replaced the HTML on the clipboard. Image echoes are recognised by the decoded
+  picture, not just by exact bytes, so a re-encoded return of the same picture
+  does not overwrite the local clipboard either.
 - **Duplicate filtering**: if a copy duplicates the **most recent** history entry,
   the server drops it — no write, no broadcast. Text duplicates mean byte-identical
   payloads (rich text must match in both HTML and plain text); image duplicates
@@ -555,8 +566,9 @@ internal/auth/          access-key generation/check (constant time) and in-memor
                         session tokens for the admin page
 internal/clipboard/     cross-platform clipboard abstraction + watcher
   clipboard_windows.go  Win32: CF_UNICODETEXT / CF_HTML / CF_DIB (stdlib syscall)
-  clipboard_linux.go    Linux: xclip / wl-clipboard; format listing, image
-                        first, rich text, non-PNG → PNG conversion
+  clipboard_linux.go    Linux: xclip / wl-clipboard; format listing, text
+                        first, rich text, image fallback, non-PNG → PNG
+                        conversion
   x11owner_linux.go     X11: native CLIPBOARD selection owner (text/plain + text/html)
   x11watch_linux.go     X11: XFixes copy-event listener (falls back to polling)
 internal/buildinfo/     version/commit/build time (-ldflags; logs, -v, web UI)
@@ -604,6 +616,14 @@ graphical session nor systemd.
 - Single-instance detection relies on the fixed port `127.0.0.1:9210`: if another
   program holds it, the UI falls back to a random port (the log says so) and a
   second double-click starts a second client process.
+- **Do not run two client instances on the same machine**: a second desktop-mode
+  double-click is caught by the single-instance probe, but `--console` and
+  desktop mode can coexist (or a different `--ui-addr` port can be used) and
+  start two. Both watch the same clipboard, so what one of them broadcasts is
+  received by the other and written back into the local clipboard as remote
+  content — possibly replacing what you just copied (e.g. text turning into an
+  image or something else). Only the local UI port is probed; there is no
+  process-level mutex.
 - Pausing sync disconnects from the server: while paused nothing is sent and
   nothing is received, and resuming reconnects immediately; copies made while
   paused are not replayed (same as while disconnected).
@@ -626,6 +646,10 @@ graphical session nor systemd.
 - Web push always targets all online clients; no per-machine targeting yet.
 - Copies made while disconnected are not replayed after reconnecting — just copy
   again.
+- **Keep the client's `-m/--max-payload` at or below the server's**: the new
+  client-side oversized skip only applies to the client's own limit, so a frame
+  over the **server** limit makes the server close the connection (WebSocket
+  1009) and that copy is never broadcast. Matching both limits is safest.
 - History is browse-only; formats beyond text/image (e.g. file lists) are not
   handled.
 

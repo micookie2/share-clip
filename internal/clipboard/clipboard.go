@@ -7,6 +7,15 @@
 // them through a callback while automatically suppressing the echo caused by
 // applying content that arrived over the network (see Watcher.ApplyRemote).
 //
+// Both platforms follow the same read policy: usable plain text wins over an
+// image. Office suites (Excel, LibreOffice, WPS) put a rendered picture of the
+// copied cells next to the real text, so an image-first policy made a copied
+// text paste as a picture on the other machine; while text wins the image
+// target is not even fetched, so the owner's delayed rendering is not forced.
+// text/html, when offered, rides along as a richer rendition of the text. An
+// image is only read — non-PNG encodings converted to PNG — when there is no
+// usable text at all (screenshots, image editors).
+//
 // Two platforms are supported:
 //   - Windows: Win32 clipboard APIs via the stdlib syscall package. The OS
 //     exposes a clipboard sequence number, so every genuine copy action —
@@ -14,9 +23,7 @@
 //   - Linux (X11): delegates reading/writing to xclip. Copies are detected
 //     event-driven through XFixes selection-owner notifications (falling back
 //     to polling when the extension is unavailable), and the formats the
-//     owner advertises (xclip TARGETS) drive the snapshot: an image is
-//     preferred over text like on Windows, and non-PNG image encodings are
-//     converted to PNG before sharing.
+//     owner advertises (xclip TARGETS) drive the snapshot.
 //   - Linux (Wayland): delegates to wl-clipboard (wl-copy/wl-paste). Offered
 //     MIME types are enumerated with wl-paste --list-types when the installed
 //     version supports it (≥ 2.0), otherwise the snapshot falls back to a

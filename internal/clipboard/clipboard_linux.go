@@ -193,11 +193,16 @@ func firstInteger(s string) int {
 }
 
 // Snapshot reads the current clipboard. Whenever the owner advertises the
-// formats it offers, the advertised types drive the read: a copied file list
-// is ignored, an image is preferred over text (mirroring the Windows CF_DIB
-// preference) and non-PNG image encodings are converted to PNG on the fly.
-// Only tools that cannot enumerate types (wl-clipboard < 2) fall back to the
-// historical text-then-PNG guess in snapshotLegacy.
+// formats it offers, the advertised types drive the read: a copied file list is
+// ignored, usable plain text wins over an image, and an image is only read —
+// non-PNG encodings converted to PNG on the fly — when there is no usable text.
+// Text-first is deliberate: office suites (Excel, LibreOffice, WPS) put a
+// rendered picture of the copied cells next to the real text, so an image-first
+// policy made a plain-text copy paste as a picture elsewhere. The image target
+// is not even fetched while text wins, so the owner's delayed rendering is not
+// forced just to discard the picture. Only tools that cannot enumerate types
+// (wl-clipboard < 2) fall back to the historical text-then-PNG guess in
+// snapshotLegacy, which already follows the same text-first rule.
 func (b *linuxBackend) Snapshot() (Content, error) {
 	if !b.tool.listTypes {
 		return b.snapshotLegacy()
@@ -520,8 +525,9 @@ var htmlFormats = []string{
 }
 
 // chooseImageTarget returns (exact advertised name, canonical encoding) of the
-// best image format in offered, mirroring the Windows "image wins over text"
-// preference.
+// best image format in offered. It only matters when no usable text exists:
+// text wins over an image, so the image is a fallback for screenshots and image
+// editors rather than the preferred rendition.
 func chooseImageTarget(set map[string]bool) (exact, canonical string, ok bool) {
 	for _, f := range imageFormats {
 		for _, name := range f.names {
@@ -556,51 +562,107 @@ func chooseHTMLTarget(set map[string]bool) string {
 // snapshotFromTargets builds the shared Content from the offered target list,
 // reading content through fetch (exact target name in, raw bytes out).
 //  1. copied file lists are ignored;
-//  2. an image target wins over text and non-PNG encodings are converted;
-//  3. only with no decodable image does text get shared.
+//  2. usable plain text wins: an offered text target is read first and, when
+//     its bytes are non-empty and not a file artifact, returned as KindText
+//     with HTML attached opportunistically. No image target is fetched in this
+//     path — office suites offer a rendered picture next to the real text, and
+//     fetching it would force delayed rendering only to discard it;
+//  3. only when there is no usable text is an image target fetched and
+//     converted to PNG;
+//  4. otherwise the snapshot is empty, or carries the text read error when
+//     that was the only problem (see below).
+//
+// A hard text read failure does not abort the snapshot on its own: some
+// applications advertise a broken text target next to a perfectly good image,
+// and the per-format tolerance rule (mirrored by the Windows policy) says one
+// failing rendition must not abort the others. The image path is tried next;
+// its content or its real error wins, and the text error is surfaced only when
+// the image path yields nothing shareable either.
 func snapshotFromTargets(offered []string, fetch func(mime string) ([]byte, error)) (Content, error) {
 	set := offerSet(offered)
 	if hasAny(set, fileTargets...) {
 		return Content{}, nil
 	}
-	if exact, canonical, ok := chooseImageTarget(set); ok {
-		data, err := fetch(exact)
-		switch {
-		case err == nil:
-			pngData, perr := toPNG(data, canonical)
-			if perr == nil {
-				return Content{Kind: KindImage, PNG: pngData}, nil
-			}
-			// The bytes are not decodable as this image type: fall back to
-			// text below rather than dropping the copy entirely.
-		case !errors.Is(err, errNoTarget):
-			return Content{}, err
-		}
-	}
-	if t := chooseTextTarget(set); t != "" {
-		data, err := fetch(t)
-		if err != nil {
-			if !errors.Is(err, errNoTarget) {
-				return Content{}, err
-			}
-			return Content{}, nil
-		}
-		if len(data) == 0 {
-			return Content{}, nil
-		}
-		text := string(data)
-		if IsFileArtifact(text) {
-			return Content{}, nil
-		}
-		c := Content{Kind: KindText, Text: text}
-		if ht := chooseHTMLTarget(set); ht != "" {
-			if hdata, herr := fetch(ht); herr == nil && len(hdata) > 0 {
-				c.HTML = string(hdata)
-			}
-		}
+	c, ok, textErr := contentFromText(set, fetch)
+	if ok {
 		return c, nil
 	}
+	img, imgErr := contentFromImage(set, fetch)
+	if imgErr != nil {
+		return Content{}, imgErr
+	}
+	if !img.Empty() {
+		return img, nil
+	}
+	if textErr != nil {
+		return Content{}, textErr
+	}
 	return Content{}, nil
+}
+
+// contentFromText reads the best offered plain-text target and reports it as
+// usable text (ok=true) when the bytes are non-empty and not a file artifact.
+// HTML is attached opportunistically from an offered text/html target, with
+// fetch errors tolerated because HTML only enriches the text rendition.
+//
+// When no usable text exists it returns ok=false; a hard (non-errNoTarget) read
+// failure is returned as err so the caller can still try the image rendition
+// and only report the failure when nothing else was shareable.
+//
+// The image target must not be touched while this reports ok=true: usable text
+// already describes the copy, and Office applications render their picture
+// lazily (delayed rendering), so fetching it would be wasted work.
+func contentFromText(set map[string]bool, fetch func(mime string) ([]byte, error)) (Content, bool, error) {
+	target := chooseTextTarget(set)
+	if target == "" {
+		return Content{}, false, nil
+	}
+	data, err := fetch(target)
+	if err != nil {
+		if errors.Is(err, errNoTarget) {
+			// The owner no longer offers the target: fall back to an image.
+			return Content{}, false, nil
+		}
+		warnf("clipboard: read text target %s failed; trying image formats: %v", target, err)
+		return Content{}, false, err
+	}
+	if len(data) == 0 {
+		return Content{}, false, nil
+	}
+	text := string(data)
+	if IsFileArtifact(text) {
+		return Content{}, false, nil
+	}
+	c := Content{Kind: KindText, Text: text}
+	if ht := chooseHTMLTarget(set); ht != "" {
+		if hdata, herr := fetch(ht); herr == nil && len(hdata) > 0 {
+			c.HTML = string(hdata)
+		}
+	}
+	return c, true, nil
+}
+
+// contentFromImage reads the best offered image target when there is no usable
+// text, converting non-PNG encodings to PNG. A vanished target (errNoTarget) or
+// undecodable bytes simply mean there is nothing shareable: with no text
+// either, returning empty content is the truthful answer.
+func contentFromImage(set map[string]bool, fetch func(mime string) ([]byte, error)) (Content, error) {
+	exact, canonical, ok := chooseImageTarget(set)
+	if !ok {
+		return Content{}, nil
+	}
+	data, err := fetch(exact)
+	if err != nil {
+		if errors.Is(err, errNoTarget) {
+			return Content{}, nil
+		}
+		return Content{}, err
+	}
+	pngData, perr := toPNG(data, canonical)
+	if perr != nil {
+		return Content{}, nil
+	}
+	return Content{Kind: KindImage, PNG: pngData}, nil
 }
 
 // --- image conversion --------------------------------------------------------

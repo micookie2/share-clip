@@ -215,6 +215,10 @@ func samePicture(a, b []byte) bool {
 // pictureID hashes the decoded pixels of a PNG into a canonical digest. Both
 // payloads of a comparison are decoded with the same code, so two encodings
 // of one picture yield one digest regardless of how they were encoded.
+//
+// The client-side echo suppression uses clipboard.PictureDigest for the same
+// purpose; the canonicalisation (dims prefix, opaque-NRGBA bulk hash,
+// per-pixel NRGBA conversion, maxDecodeArea) must stay in sync with it.
 func pictureID(payload []byte) (id [32]byte, ok bool) {
 	cfg, err := png.DecodeConfig(bytes.NewReader(payload))
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 ||

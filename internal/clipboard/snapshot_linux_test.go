@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"slices"
 	"testing"
 
 	"golang.org/x/image/bmp"
@@ -110,6 +111,8 @@ func TestSnapshotFromTargets(t *testing.T) {
 	}
 
 	t.Run("png passthrough keeps bytes identical", func(t *testing.T) {
+		// Text is offered but the fake has no bytes for it, so the text read
+		// yields errNoTarget and the image is fetched as a fallback.
 		var req []string
 		c, err := snapshotFromTargets(
 			[]string{"image/png", "text/plain"},
@@ -120,12 +123,15 @@ func TestSnapshotFromTargets(t *testing.T) {
 		if c.Kind != KindImage || !bytes.Equal(c.PNG, pngBytes) {
 			t.Fatalf("png not passed through: kind=%v equal=%v", c.Kind, bytes.Equal(c.PNG, pngBytes))
 		}
-		if len(req) != 1 || req[0] != "image/png" {
-			t.Fatalf("image must win over text and be fetched alone, got %v", req)
+		if want := []string{"text/plain", "image/png"}; !slices.Equal(req, want) {
+			t.Fatalf("want text tried first, then the image fallback %v; got %v", want, req)
 		}
 	})
 
-	t.Run("image preferred over text", func(t *testing.T) {
+	t.Run("text preferred over image", func(t *testing.T) {
+		// The Excel/Office case: text and a rendered picture are offered and
+		// both readable, but the text wins and the picture must not even be
+		// fetched.
 		var req []string
 		c, err := snapshotFromTargets(
 			[]string{"text/plain", "image/jpeg"},
@@ -136,8 +142,135 @@ func TestSnapshotFromTargets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if c.Kind != KindText || c.Text != "alt text" {
+			t.Fatalf("text must win over the image, got %+v", c)
+		}
+		if want := []string{"text/plain"}; !slices.Equal(req, want) {
+			t.Fatalf("image target must not be fetched when text wins, want %v; got %v", want, req)
+		}
+	})
+
+	t.Run("text with html wins over image", func(t *testing.T) {
+		var req []string
+		c, err := snapshotFromTargets(
+			[]string{"text/plain", "text/html", "image/png"},
+			newFetch(map[string][]byte{
+				"text/plain": []byte("hello"),
+				"text/html":  []byte("<b>hello</b>"),
+				"image/png":  pngBytes,
+			}, &req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind != KindText || c.Text != "hello" || c.HTML != "<b>hello</b>" {
+			t.Fatalf("rich text must win over the image: %+v", c)
+		}
+		if want := []string{"text/plain", "text/html"}; !slices.Equal(req, want) {
+			t.Fatalf("want %v, got %v", want, req)
+		}
+	})
+
+	t.Run("image is fallback when text is empty", func(t *testing.T) {
+		var req []string
+		c, err := snapshotFromTargets(
+			[]string{"text/plain", "image/png"},
+			newFetch(map[string][]byte{
+				"text/plain": []byte{},
+				"image/png":  pngBytes,
+			}, &req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind != KindImage || !bytes.Equal(c.PNG, pngBytes) {
+			t.Fatalf("empty text must fall back to the image, got %+v", c)
+		}
+		if want := []string{"text/plain", "image/png"}; !slices.Equal(req, want) {
+			t.Fatalf("want %v, got %v", want, req)
+		}
+	})
+
+	t.Run("image is fallback when text target vanishes", func(t *testing.T) {
+		var req []string
+		c, err := snapshotFromTargets(
+			[]string{"text/plain", "image/jpeg"},
+			newFetch(map[string][]byte{"image/jpeg": jpegBytes}, &req))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if c.Kind != KindImage || !validPNG(c.PNG) {
-			t.Fatalf("want a PNG image, got kind=%v", c.Kind)
+			t.Fatalf("errNoTarget text must fall back to the image, got kind=%v", c.Kind)
+		}
+		if want := []string{"text/plain", "image/jpeg"}; !slices.Equal(req, want) {
+			t.Fatalf("want %v, got %v", want, req)
+		}
+	})
+
+	t.Run("text read failure falls back to image", func(t *testing.T) {
+		// A broken text target next to a good bitmap must not lose the copy:
+		// the image rendition is shared and no error is reported.
+		var req []string
+		c, err := snapshotFromTargets(
+			[]string{"text/plain", "image/png"},
+			func(mime string) ([]byte, error) {
+				req = append(req, mime)
+				if mime == "text/plain" {
+					return nil, errors.New("read error")
+				}
+				return pngBytes, nil
+			})
+		if err != nil {
+			t.Fatalf("text read failure must not abort the image fallback: %v", err)
+		}
+		if c.Kind != KindImage || !bytes.Equal(c.PNG, pngBytes) {
+			t.Fatalf("want the image fallback, got %+v", c)
+		}
+		if want := []string{"text/plain", "image/png"}; !slices.Equal(req, want) {
+			t.Fatalf("want %v, got %v", want, req)
+		}
+	})
+
+	t.Run("text read failure surfaces when no image is available", func(t *testing.T) {
+		readErr := errors.New("read error")
+		cases := []struct {
+			name    string
+			offered []string
+			fetch   func(mime string) ([]byte, error)
+			want    []string
+		}{
+			{
+				name:    "no image target offered",
+				offered: []string{"text/plain"},
+				fetch: func(mime string) ([]byte, error) {
+					return nil, readErr
+				},
+				want: []string{"text/plain"},
+			},
+			{
+				name:    "image target advertised but gone",
+				offered: []string{"text/plain", "image/png"},
+				fetch: func(mime string) ([]byte, error) {
+					if mime == "text/plain" {
+						return nil, readErr
+					}
+					return nil, errNoTarget
+				},
+				want: []string{"text/plain", "image/png"},
+			},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				var req []string
+				_, err := snapshotFromTargets(c.offered, func(mime string) ([]byte, error) {
+					req = append(req, mime)
+					return c.fetch(mime)
+				})
+				if !errors.Is(err, readErr) {
+					t.Fatalf("want the text read error when nothing else is shareable, got %v", err)
+				}
+				if !slices.Equal(req, c.want) {
+					t.Fatalf("want %v, got %v", c.want, req)
+				}
+			})
 		}
 	})
 
@@ -179,7 +312,20 @@ func TestSnapshotFromTargets(t *testing.T) {
 		}
 	})
 
-	t.Run("corrupt image falls back to text", func(t *testing.T) {
+	t.Run("corrupt image with no text yields empty", func(t *testing.T) {
+		var req []string
+		c, err := snapshotFromTargets(
+			[]string{"image/jpeg"},
+			newFetch(map[string][]byte{"image/jpeg": []byte("not an image at all")}, &req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !c.Empty() {
+			t.Fatalf("undecodable image with no text must be ignored, got %+v", c)
+		}
+	})
+
+	t.Run("corrupt image never consulted when text wins", func(t *testing.T) {
 		var req []string
 		c, err := snapshotFromTargets(
 			[]string{"image/jpeg", "text/plain"},
@@ -191,7 +337,10 @@ func TestSnapshotFromTargets(t *testing.T) {
 			t.Fatal(err)
 		}
 		if c.Kind != KindText || c.Text != "hello" {
-			t.Fatalf("want text fallback, got %+v", c)
+			t.Fatalf("want the text, got %+v", c)
+		}
+		if want := []string{"text/plain"}; !slices.Equal(req, want) {
+			t.Fatalf("want %v, got %v", want, req)
 		}
 	})
 
@@ -264,6 +413,25 @@ func TestSnapshotFromTargets(t *testing.T) {
 		}
 		if !c.Empty() {
 			t.Fatalf("file artifact text must be ignored, got %+v", c)
+		}
+	})
+
+	t.Run("file artifact text falls back to the image rendition", func(t *testing.T) {
+		var req []string
+		c, err := snapshotFromTargets(
+			[]string{"text/plain", "image/png"},
+			newFetch(map[string][]byte{
+				"text/plain": []byte("file:///etc/hosts"),
+				"image/png":  pngBytes,
+			}, &req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Kind != KindImage || !bytes.Equal(c.PNG, pngBytes) {
+			t.Fatalf("file-artifact text is not usable text, want the image, got %+v", c)
+		}
+		if want := []string{"text/plain", "image/png"}; !slices.Equal(req, want) {
+			t.Fatalf("want %v, got %v", want, req)
 		}
 	})
 }

@@ -53,11 +53,18 @@ Office 等富文本编辑器保留格式，粘贴到纯文本框仍得到纯文�
   往返后以不同字节重新编码，本机也不会把它当成本地新复制而回传。
 - **自身副本保护**：本机刚发出的内容若被对端原样回传，或被对端降级成纯文本后
   回传，本机不会再拿它覆盖剪贴板——否则会出现“刚复制完，粘贴却变成纯文本”
-  （富文本的 HTML 被回传的纯文本覆盖）。
-- 同时携带文本与图片的复制以**图片优先**。Windows 与 Linux 都会先枚举剪贴板
-  上实际提供的格式（Windows 的 CF_DIB、Linux 的 xclip TARGETS / wl-paste
-  --list-types）：有图片格式就发图片，图片缺失或无法解码才退回文本；非 PNG
-  编码（JPEG/GIF/BMP/TIFF/WebP）会在发送前转成 PNG。
+  （富文本的 HTML 被回传的纯文本覆盖）。图片回传按**解码后的画面**识别（而非
+  只比对字节），因此同一张图被对端重新编码后回传也不会覆盖本机剪贴板。
+- 同时携带文本与图片的复制以**文本优先**：只要剪贴板上的文本可用（非空、不是
+  文件 URI 列表）就同步文本（有 `text/html` 时一并携带 HTML）；只有没有可用
+  文本（截图、图片编辑器等）时才取图片，非 PNG 编码（JPEG/GIF/BMP/TIFF/WebP）
+  发送前转成 PNG（该转换针对 Linux 提供的图片格式；Windows 只读 CF_DIB，并统一
+  重新编码成 PNG）。Windows 与 Linux 都先枚举剪贴板上实际提供的格式（Windows 的
+  CF_DIB、Linux 的 xclip TARGETS / wl-paste --list-types），文本胜出时图片
+  根本不会被读取，因此也不会迫使 Office 程序为一份用不上的图片做延迟渲染。
+  之所以这样改：Excel/LibreOffice/WPS 复制单元格时会在真实文本旁边附一份
+  渲染好的图片，图片优先会让“复制文字”到对端变成“复制图片”。代价是极少数
+  同时提供文本与图片的“图片复制”现在会按文本同步（粘贴得到的仍是文本）。
 - **重复内容过滤**：本次复制与**最近一条**历史内容相同时，server 直接忽略——
   不入库、也不广播。文本按“同类型 + 同字节”判定（富文本需要 HTML 与纯文本
   两者都一致才视为重复），图片按“解码后的画面相同”判定：同一张图即使被另一台
@@ -471,7 +478,7 @@ internal/appconfig/     client 持久化设置：config.json 路径、默认值�
 internal/auth/          访问 key 生成/校验（恒定时间比较）+ 管理页会话令牌（内存）
 internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语义）
   clipboard_windows.go  Win32：CF_UNICODETEXT / CF_HTML / CF_DIB（stdlib syscall）
-  clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+图优先+富文本+多格式转 PNG
+  clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+文本优先+富文本+图片兜底+多格式转 PNG
   x11owner_linux.go     X11：原生 CLIPBOARD 选择所有者（同时提供 text/plain 与 text/html）
   x11watch_linux.go     X11：XFixes 复制事件监听（事件驱动，不可用时退回轮询）
 internal/buildinfo/     版本号/commit/构建时间（-ldflags 注入，日志、-v、Web 共用）
@@ -509,6 +516,11 @@ e2e 测试用真实的 WebSocket 连接验证：广播给除发送者外所有 c
   没有托盘时客户端仍会运行，只是退出只能靠本地页面上的按钮。
 - 单实例靠固定端口 `127.0.0.1:9210` 探测：该端口被别的程序占用时本地界面会
   退到随机端口（日志有提示），此时再次双击会启动第二个客户端进程。
+- **同一台机器不要同时跑两个 client**：桌面模式第二次双击会被单实例探针挡住，
+  但 `--console` 与桌面模式并存（或换了 `--ui-addr` 端口）时能起两个；两个实例
+  监听同一份剪贴板，其中一个发出的内容会被另一个当成远端内容写回本机剪贴板，
+  可能出现“刚复制的文字被替换成图片/别的内容”。我们只探测本机界面端口，没有
+  加进程级互斥。
 - 暂停同步会断开与 server 的连接：暂停期间既不发送本机复制，也收不到其它机器
   的内容，恢复后立即重连；暂停期间复制的内容不会补发（与断线期间一致）。
 - 托盘模式的日志写在配置文件旁的 `client.log`（超过 2 MiB 轮转为
@@ -525,6 +537,9 @@ e2e 测试用真实的 WebSocket 连接验证：广播给除发送者外所有 c
   X11 与 Windows 会同时写入纯文本与 HTML，无此限制。
 - Web 推送只能推送到全部在线 client，暂不支持指定某台机器。
 - 断线期间本机复制的内容不会补发（重连后重新复制即可）。
+- **client 的 `-m/--max-payload` 不要超过 server 的 `-m`**：client 侧新加的
+  “超限跳过”只按本机上限判断，帧一旦超过 **server** 的上限，server 会直接关闭
+  连接（WebSocket 1009），这条内容不会被同步；两边保持一致最稳妥。
 - 历史仅展示；文件列表等文本/图片之外的格式不处理。
 
 ## Roadmap（可能的方向）
