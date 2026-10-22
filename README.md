@@ -30,14 +30,14 @@ Office 等富文本编辑器保留格式，粘贴到纯文本框仍得到纯文�
  │ client       │◄────────────►│ client       │
  │ 托盘+本地界面│              │ 托盘+本地界面│
  └──────┬───────┘   WebSocket  └──────┬───────┘
-        │  ws://host:9000/ws          │
+        │  ws://host:9090/ws          │
         └──────────────┬──────────────┘
                    ┌───▼────────────┐
                    │  shareclip-    │  常开机器（也可同时跑 client）
-                   │  server :9000  │
+                   │  server :9090  │
                    │  + SQLite 历史 │
                    └───┬────────────┘
-                       │ http://host:9000/
+                       │ http://host:9090/
                 ┌──────▼──────┐
                 │  Web 管理页  │ 浏览器：查看历史 / 推送
                 └─────────────┘
@@ -165,10 +165,12 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 ## 使用
 
 ```bash
-# 1) 在常开机器上启动 server（默认端口 9000，数据库 shareclip.db 存于当前目录）
+# 1) 在常开机器上启动 server（默认端口 9090，数据库 shareclip.db 存于当前目录）
 #    启动日志里会打印本次运行的「访问 key」，先记下来：
 ./shareclip-server
 #    访问 key（本次启动随机生成，重启后会变）: uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
+#    想装成开机自启的 systemd 服务（交互式问答，默认装到 /opt/share-clip/）：
+sudo ./shareclip-server install
 
 # 2) 每台要共享剪贴板的机器启动 client，两种方式任选：
 
@@ -179,10 +181,10 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 
 #    2b) 控制台模式（脚本、开机自启）：显式给出 server 地址与访问 key，
 #        日志打在终端，不托盘、不打开页面。命令行给 -s 或加 --console 都走这条路径。
-./shareclip-client -s 192.168.1.10:9000 -k uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
+./shareclip-client -s 192.168.1.10:9090 -k uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
 ./shareclip-client --console            # 地址与 key 取自桌面界面保存过的配置
 
-# 3) 正常复制/粘贴即可。可选：浏览器打开 http://192.168.1.10:9000/，
+# 3) 正常复制/粘贴即可。可选：浏览器打开 http://192.168.1.10:9090/，
 #    首次会要求填写访问 key，之后查看历史、点“推送到全部在线客户端”把某条
 #    内容重新推到所有机器。
 ```
@@ -194,14 +196,39 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 
 | 简写 | 长写法 | 默认 | 说明 |
 |------|--------|------|------|
-| `-a` | `--addr` | `:9000` | 监听地址，HTTP 与 WebSocket 共用同一端口 |
+| `-a` | `--addr` | `:9090` | 监听地址，HTTP 与 WebSocket 共用同一端口 |
 | `-d` | `--db` | `shareclip.db` | SQLite 历史数据库文件路径 |
 | `-l` | `--history-limit` | `500` | 历史保留条数，超出自动清理最旧 |
 | `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
-| `-k` | `--key` | 空（每次启动随机生成） | 固定访问 key；留空则启动时生成并打印到日志 |
+| `-k` | `--key` | 空 | 固定访问 key；优先级低于显式 `-K`、高于环境变量与随机 |
+| `-K` | `--key-file` | 空 | 从文件读取访问 key（`install` 生成的 `shareclip.key` 即此格式：`SHARECLIP_KEY=<key>`） |
 | — | `--no-auth` | false | 关闭访问鉴权（仅限完全可信的内网，不建议） |
 | `-q` | `--quiet` | false | 减少日志 |
 | `-v` | `--version` | — | 打印版本号与构建信息（commit、构建时间、Go 版本/平台）后退出 |
+
+key 的取值顺序：`-k` > `-K` 文件 > 环境变量 `SHARECLIP_KEY`（systemd
+单元经 `EnvironmentFile=` 注入的就是它）> 每次启动随机生成并打印到日志。
+
+### 访问 key 的持久化（key 子命令）
+
+`install` 时自动生成一个固定 key，写入**与可执行文件同目录**的
+`shareclip.key`（默认即 `/opt/share-clip/shareclip.key`，权限 0600），
+此后每次启动——包括重启、升级重装——都一直用这一个 key。key 不写进单元
+文件正文：单元只有一行 `EnvironmentFile=/opt/share-clip/shareclip.key`，
+由 systemd 以 root 读取注入服务进程，journal、`systemctl cat`、`ps` 里
+都看不到 key 值。
+
+```bash
+sudo shareclip-server key                # 显示当前 key 与文件位置
+sudo shareclip-server key -r             # 生成新的随机 key（写入文件并自动重启服务）
+sudo shareclip-server key --set <key>    # 设置为指定 key
+shareclip-server key --user              # 按用户级服务定位
+```
+
+更换 key 后所有客户端与管理页都要改用新 key。`key` 会先从已安装单元的
+`EnvironmentFile=` 定位文件，找不到时退回当前程序同目录的 `shareclip.key`。
+`uninstall --purge` 会把 key 文件一并删除（只按文件名 `shareclip.key` 认，
+绝不误删他人单元里的 EnvironmentFile）。
 
 ### client 参数
 
@@ -209,7 +236,7 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 |------|--------|------|------|
 | `-s` | `--server` | — | server 地址 `host:port`；不给 `-s` 时默认进桌面模式（地址在界面里设置），给了则默认进控制台模式（`-g`/`-c` 可改变默认） |
 | `-k` | `--key` | — | server 的访问 key（server 启动日志里打印）；server 用 `--no-auth` 时留空 |
-| `-g` | `--gui` | false | 强制桌面模式（托盘 + 本地界面），例如 `--gui -s 1.2.3.4:9000` |
+| `-g` | `--gui` | false | 强制桌面模式（托盘 + 本地界面），例如 `--gui -s 1.2.3.4:9090` |
 | `-c` | `--console` | false | 强制控制台模式；不带 `-s`/`-k` 时使用桌面界面保存的地址与 key |
 | `-n` | `--name` | 主机名 | 在其它机器/Web 页显示的机器名 |
 | `-p` | `--poll` | `1000` | 监听兜底轮询间隔毫秒：X11 默认由 XFixes 复制事件驱动，事件不可用才按此间隔；Wayland（无事件通道）按此间隔 |
@@ -220,7 +247,7 @@ Web 页面顶部副标题显示 `· v0.1.0`（悬停可看 commit 与构建时�
 | `-v` | `--version` | — | 打印版本号与构建信息（commit、构建时间、Go 版本/平台）后退出 |
 
 简写与长写法完全等价（`-s`、`-server`、`--server` 三种都能用，取值可写
-`-s 1.2.3.4:9000` 或 `-s=1.2.3.4:9000`），因此老命令、开机自启脚本里的
+`-s 1.2.3.4:9090` 或 `-s=1.2.3.4:9090`），因此老命令、开机自启脚本里的
 `-server ...` 依旧照原样工作。`-g/--gui` 与 `-c/--console` 只是强制选择运行
 方式，不改变其它选项的写法。
 
@@ -232,29 +259,33 @@ server **默认开启鉴权**：启动时生成一个随机 key（24 字节随�
 - **客户端连接**：WebSocket 握手必须带 `X-Shareclip-Key: <key>`（agent 自动加，
   用 `-k` 或界面里填的 key）。缺失或不对的握手直接收到 `401`，连接被拒且不会
   进入在线列表；
-- **管理页与 REST API**：浏览器首次访问 `http://<server>:9000/` 会看到登录页，
+- **管理页与 REST API**：浏览器首次访问 `http://<server>:9090/` 会看到登录页，
   填入 key 后 server 下发一个 `HttpOnly`、`SameSite=Lax` 的**会话 Cookie**
   （令牌在内存里，不是 key 本身；进程重启即全部失效），之后页面、`/api/*` 与
-  SSE 都靠它放行。也可以用 `http://<server>:9000/?key=<key>` 一次性登入——页面
+  SSE 都靠它放行。也可以用 `http://<server>:9090/?key=<key>` 一次性登入——页面
   会立刻把 key 换成 Cookie 并从地址栏抹掉，免得 key 留在浏览历史里；
 - 脚本/curl 也可以直接带 `X-Shareclip-Key: <key>` 或 `Authorization: Bearer <key>`。
 
 几个常见选择：
 
-- **不想每次重启都换 key**：用 `-k <自定义key>` 固定（例如开机自启脚本里写死）。
-  注意命令行参数在本机进程列表里可见，共享机器上慎用；
+- **不想每次重启都换 key**：用 `install` 部署 systemd 服务（自动生成并固定使用
+  `shareclip.key`，见「访问 key 的持久化」），或临时用 `-k <key>` /
+  `-K <文件>` / 环境变量 `SHARECLIP_KEY` 固定。注意 `-k` 的命令行参数在本机
+  进程列表里可见，共享机器上慎用；`-K` 文件方式没有这个问题；
 - **固定 key 从哪来**：`head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='`
   之类随便生成一串即可，长度不限（最多 512 字节，且不能含换行/制表符等控制字符）；
 - **完全不要鉴权**：`--no-auth`。此时任何能访问该端口的人都能连接、查看历史；
   server 启动日志里会打出警告。只应在完全可信的内网里显式使用。
 
-key 不落盘（server 不写 key 文件），这是「每次启动随机生成」的自然结果；
-client 侧填过的 key 会保存在它的配置文件里（见下文桌面模式设置）。
+直接运行时 key 不落盘（server 进程自己从不主动写 key 文件），这是「每次启动
+随机生成」的自然结果；`install` 部署时生成的 `shareclip.key` 除外（见上文
+「访问 key 的持久化」）。client 侧填过的 key 会保存在它的配置文件里
+（见下文桌面模式设置）。
 
 ### 客户端桌面模式（托盘 + 本地界面）
 
 不带 `-s` 运行（双击即可）进入桌面模式；`-g/--gui` 可强制进入，例如
-`shareclip-client --gui -s 1.2.3.4:9000`（命令行给的值优先于已保存的配置）。
+`shareclip-client --gui -s 1.2.3.4:9090`（命令行给的值优先于已保存的配置）。
 
 - **托盘 + 浏览器页面**：托盘图标常驻，同时用系统默认浏览器打开
   `http://127.0.0.1:9210`（`--ui-addr` 可改，只监听回环；`--no-open` 则不自动
@@ -263,7 +294,7 @@ client 侧填过的 key 会保存在它的配置文件里（见下文桌面模�
   （保存后立即按新配置重连）；实时显示连接状态（当前阶段、server、重连倒计时）；
   实时日志（SSE 推送，可清空、可自动滚动）；页脚显示配置文件与日志文件路径、
   托盘是否可用、版本与构建信息；另有「退出客户端」按钮。
-- **托盘菜单**：一行禁用状态（如 `已连接：192.168.1.10:9000`）、`打开设置与日志`、
+- **托盘菜单**：一行禁用状态（如 `已连接：192.168.1.10:9090`）、`打开设置与日志`、
   `启用同步`/`暂停同步` 复选框、`退出`。暂停会断开与 server 的连接：期间本机
   复制不发送、也收不到别人的内容；恢复后立即重连。
 - **设置持久化**：Windows `%AppData%\share-clip\config.json`，Linux
@@ -296,44 +327,60 @@ client 侧填过的 key 会保存在它的配置文件里（见下文桌面模�
 
 ### 安装为 systemd 服务
 
+`install` 默认是**交互式安装**：逐项询问安装位置、监听端口、数据目录、历史
+条数、鉴权方式、运行用户、单元名与启动策略，每一项都给出默认值（`[方括号]`），
+直接回车即采用；命令行上显式给过的选项不再重复提问；最后打印配置摘要并让你
+确认才落盘。标准输入不是终端（管道、CI）时自动跳过全部提问，效果等同 `--yes`。
+
 ```bash
-# 系统级（需要 root）：/etc/systemd/system/share-clip.service，开机自启
-sudo install -m755 bin/shareclip-server /usr/local/bin/shareclip-server  # 先放到固定路径
-sudo shareclip-server install
+# 系统级（需要 root）：可执行文件安装到 /opt/share-clip/，
+# 单元写入 /etc/systemd/system/share-clip.service，开机自启
+sudo shareclip-server install              # 交互式
+sudo shareclip-server install --yes        # 不提问：/opt/share-clip + :9090 + 默认值
 sudo shareclip-server install --no-start   # 只 enable，不立即启动
 
-# 用户级（无需 root）：~/.config/systemd/user/share-clip.service
+# 用户级（无需 root）：可执行文件默认装到 ~/.local/bin，
+# 单元写入 ~/.config/systemd/user/share-clip.service
 shareclip-server install --user
 loginctl enable-linger <user>   # 需要登出后仍在跑 / 开机无登录会话也启动时
 
 # 只查看会写入的单元文件与将执行的命令，不落盘、不调用 systemctl
 shareclip-server install --dry-run
 
-# 卸载：停止 + 禁用 + 删除单元 + reload；--purge 连数据目录（数据库）一起删
+# 卸载：停止 + 禁用 + 删除单元 + reload；--purge 连数据目录、安装的
+# 可执行文件、数据库与 key 文件一起删
 sudo shareclip-server uninstall
 shareclip-server uninstall --user --purge
 ```
 
+- 安装会把**当前正在运行的可执行文件复制**到安装位置（交互提问，默认系统级
+  `/opt/share-clip/`、用户级 `~/.local/bin/`），单元里的 `ExecStart` 指向这份
+  副本；日后换构建产物重新跑一次 `install` 即完成升级，`go run` 的临时产物也
+  可以直接装（服务用的是复制件，不依赖临时文件存活）。
 - `install` 写入单元文件后执行 `systemctl daemon-reload` 与
   `systemctl enable --now <单元名>`（加了 `--no-start` 就只有 `enable`）；
   用户级相关命令一律带 `--user`。
-- 数据目录：系统级 `/var/lib/share-clip`（由单元的 `StateDirectory=` 创建并归属；
+- 数据目录（交互里问的是目录，数据库文件固定为其中的 `shareclip.db`）：
+  系统级默认 `/var/lib/share-clip`（由单元的 `StateDirectory=` 创建并归属；
   默认 `DynamicUser=yes` 时实际位于 `/var/lib/private/share-clip`，
-  `/var/lib/share-clip` 是指向它的符号链接），用户级 `~/.local/share/share-clip`
-  （单元用 `ExecStartPre=/bin/mkdir -p` 创建）。数据库默认是数据目录下的
-  `shareclip.db`。
+  `/var/lib/share-clip` 是指向它的符号链接），用户级默认
+  `~/.local/share/share-clip`。选了自定义目录时安装器会提前建好并处理归属：
+  配 `--run-as` 就 chown 给该用户（推荐）；用动态用户则只能放宽到 `0777`
+  并打印警告。
 - `install` 的 `-a/-d/-l/-m` 决定 `ExecStart` 里的监听地址、数据库路径、历史
   条数与单条上限（默认值与普通启动一致，只有数据库路径默认落在数据目录而不是
   当前目录）；**服务器的其它参数**（当前是 `-q`，以及以后新增的参数）用可重复的
   `--exec-arg` 追加，例如 `sudo shareclip-server install --exec-arg=-q
   --exec-arg=-l --exec-arg=1000`，等价的单元行是
-  `ExecStart=…/shareclip-server -a :9000 -d … -l 500 -m 33554432 -q -l 1000`
+  `ExecStart=…/shareclip-server -a :9090 -d … -l 500 -m 33554432 -q -l 1000`
   （重复的标量参数后者生效，所以这样也能覆盖前面的默认值）。
-- **鉴权**：默认开启，key 每次启动随机生成并写进 journal——
-  `journalctl -u share-clip -f | grep 访问 key` 就能看到（用户级加 `--user`）。
-  想固定 key（脚本、开机自启方便）用 `--exec-arg=-k --exec-arg=<你的key>`；
-  想彻底关闭用 `--no-auth`。注意 key 写在 `ExecStart` 里时单元文件是 0644，
-  同机其他用户可见，共享机器上别这么做。
+- **鉴权**：默认开启，且 key 是**安装时生成的固定值**——保存到与可执行文件
+  同目录的 `shareclip.key`（默认 `/opt/share-clip/shareclip.key`，权限 0600），
+  重启、升级重装都一直用这一个。单元只写一行 `EnvironmentFile=…/shareclip.key`，
+  由 systemd 以 root 读取注入环境，journal、`systemctl cat`、`ps` 里都看不到
+  key 值。查看用 `sudo shareclip-server key`，更换用
+  `sudo shareclip-server key -r`（自动重启服务）或 `--set <key>`。
+  交互安装里也可留空自动生成或直接输入一个；`--no-auth` 彻底关闭鉴权。
 - 想改的不只是启动参数（环境变量、资源限制、依赖关系等）时，用 systemd 原生的
   覆盖，不必改单元文件本身：`sudo systemctl edit share-clip` 会生成
   `/etc/systemd/system/share-clip.service.d/override.conf`，在里面写
@@ -346,21 +393,23 @@ shareclip-server uninstall --user --purge
 - 排障：`systemctl status share-clip`、`journalctl -u share-clip -f`；用户级加
   `--user`（`systemctl --user status share-clip`、`journalctl --user -u share-clip -f`）。
 
-**务必先安装到固定路径**：`install` 用的是**当前正在运行的那个可执行文件**的
-路径。`go run` 的临时产物会被直接拒绝（这类文件重启后就不存在了）；家目录下的
-二进制（如 `~/go/bin/shareclip-server`）在系统级单元里也不可用，因为系统级单元
-带 `ProtectHome=true`，家目录对它不可见。正确做法是先 `go build`，再
-`sudo install -m755 bin/shareclip-server /usr/local/bin/`，然后用该路径运行
-`install`。
+**升级与安装来源**：交互问答的「安装位置」决定可执行文件复制到哪（默认
+`/opt/share-clip/`）；直接 `go build -o /opt/share-clip/shareclip-server` 后
+原地运行 `install` 也支持（检测到源与目标同一文件时自动跳过复制）。
 
 #### install 选项
 
+交互模式下列出的默认值就是各问题的默认答案；命令行显式给出的选项不再提问。
+
 | 简写 | 长写法 | 默认 | 说明 |
 |------|--------|------|------|
-| `-a` | `--addr` | `:9000` | 写进 `ExecStart` 的监听地址 |
-| `-d` | `--db` | 数据目录下的 `shareclip.db` | SQLite 数据库路径；留空按作用域推导 |
+| `-y` | `--yes` | false | 非交互：不提问，直接用命令行参数与各项默认值 |
+| — | `--dir` | 系统级 `/opt/share-clip`，用户级 `~/.local/bin` | 安装位置（可执行文件复制到的目录） |
+| `-a` | `--addr` | `:9090` | 写进 `ExecStart` 的监听地址；交互里只填端口也可 |
+| `-d` | `--db` | 数据目录下的 `shareclip.db` | SQLite 数据库完整路径；留空按作用域推导 |
 | `-l` | `--history-limit` | `500` | 历史保留条数 |
-| `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数 |
+| `-m` | `--max-payload` | `33554432`(32MiB) | 单条内容最大字节数（交互里按 MB 问） |
+| `-k` | `--key` | 空（自动生成） | 指定访问 key 并写入安装目录的 `shareclip.key`（覆盖已有）；留空=自动生成/沿用现有文件 |
 | `-u` | `--user` | false | 安装为用户级服务（`~/.config/systemd/user`，无需 root） |
 | `-n` | `--name` | `share-clip` | 单元名（不含 `.service`） |
 | — | `--run-as` | 空（`DynamicUser=yes`） | 系统级服务以该用户运行；用户级会忽略此选项 |
@@ -378,14 +427,15 @@ shareclip-server uninstall --user --purge
 | `-u` | `--user` | false | 卸载用户级服务（`~/.config/systemd/user`） |
 | `-n` | `--name` | `share-clip` | 单元名（不含 `.service`） |
 | — | `--unit-dir` | 按作用域 | 覆盖单元文件目录 |
-| — | `--purge` | false | 同时删除数据目录（数据库） |
+| — | `--purge` | false | 同时删除数据目录、安装的可执行文件、数据库（含 `-wal`/`-shm`）与 key 文件 |
 | — | `--dry-run` | false | 只打印将删除的文件与将执行的命令 |
 
 ## Web 页面（server 管理页）
 
-`http://<server>:9000/`（默认监听全部网卡，内网可访问）。**首次打开会要求填写
-访问 key**（server 启动日志里打印的那串；也可以用
-`http://<server>:9000/?key=<key>` 一次性登入）。登录后 server 下发一个会话
+`http://<server>:9090/`（默认监听全部网卡，内网可访问）。**首次打开会要求填写
+访问 key**（直接运行看 server 启动日志，systemd 部署用 `shareclip-server key`
+查看；也可以用
+`http://<server>:9090/?key=<key>` 一次性登入）。登录后 server 下发一个会话
 Cookie，页面与它的所有接口都靠它放行（页面上的「退出」按钮会注销会话并回到
 登录页，共享电脑上离开时用）。之后的功能有：
 

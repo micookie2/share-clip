@@ -117,7 +117,7 @@ func TestUnitFileSystemScope(t *testing.T) {
 	o := Options{
 		Scope:        ScopeSystem,
 		ExecPath:     "/usr/local/bin/shareclip-server",
-		Addr:         ":9000",
+		Addr:         ":9090",
 		HistoryLimit: 500,
 		MaxPayload:   32 << 20,
 	}
@@ -130,7 +130,7 @@ func TestUnitFileSystemScope(t *testing.T) {
 		"Wants=network-online.target",
 		"[Service]",
 		"Type=simple",
-		"ExecStart=/usr/local/bin/shareclip-server -a :9000 -d /var/lib/share-clip/shareclip.db -l 500 -m 33554432",
+		"ExecStart=/usr/local/bin/shareclip-server -a :9090 -d /var/lib/share-clip/shareclip.db -l 500 -m 33554432",
 		"Restart=always",
 		"RestartSec=2",
 		"StandardOutput=journal",
@@ -175,13 +175,13 @@ func TestUnitFileUserScope(t *testing.T) {
 	o := Options{
 		Scope:        ScopeUser,
 		ExecPath:     "/usr/local/bin/shareclip-server",
-		Addr:         ":9000",
+		Addr:         ":9090",
 		HistoryLimit: 500,
 		MaxPayload:   32 << 20,
 	}
 	text := UnitFile(o)
 	wantLines := []string{
-		"ExecStart=/usr/local/bin/shareclip-server -a :9000 -d %h/.local/share/share-clip/shareclip.db -l 500 -m 33554432",
+		"ExecStart=/usr/local/bin/shareclip-server -a :9090 -d %h/.local/share/share-clip/shareclip.db -l 500 -m 33554432",
 		"ExecStartPre=/bin/mkdir -p %h/.local/share/share-clip",
 		"WorkingDirectory=%h/.local/share/share-clip",
 		"NoNewPrivileges=true",
@@ -204,12 +204,12 @@ func TestUnitFileQuoting(t *testing.T) {
 	o := Options{
 		Scope:        ScopeSystem,
 		ExecPath:     "/opt/my tools/shareclip-server",
-		Addr:         ":9000",
+		Addr:         ":9090",
 		DBPath:       "/srv/My Data/shareclip.db",
 		HistoryLimit: 10,
 		MaxPayload:   1024,
 	}
-	want := `ExecStart="/opt/my tools/shareclip-server" -a :9000 -d "/srv/My Data/shareclip.db" -l 10 -m 1024`
+	want := `ExecStart="/opt/my tools/shareclip-server" -a :9090 -d "/srv/My Data/shareclip.db" -l 10 -m 1024`
 	if !hasLine(UnitFile(o), want) {
 		t.Fatalf("带空格的参数未正确加引号:\n%s", UnitFile(o))
 	}
@@ -229,7 +229,7 @@ func TestUnitFileQuoting(t *testing.T) {
 func TestPercentEscaping(t *testing.T) {
 	sys := Options{Scope: ScopeSystem, ExecPath: "/opt/100%/shareclip-server", DBPath: "/srv/100%/shareclip.db"}
 	text := UnitFile(sys)
-	if !hasLine(text, "ExecStart=/opt/100%%/shareclip-server -a :9000 -d /srv/100%%/shareclip.db -l 500 -m 33554432") {
+	if !hasLine(text, "ExecStart=/opt/100%%/shareclip-server -a :9090 -d /srv/100%%/shareclip.db -l 500 -m 33554432") {
 		t.Fatalf("系统级字面量 %% 未转义:\n%s", text)
 	}
 	if !hasLine(text, "ReadWritePaths=/srv/100%%") {
@@ -239,7 +239,7 @@ func TestPercentEscaping(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	user := Options{Scope: ScopeUser, ExecPath: "/usr/local/bin/shareclip-server", DBPath: filepath.Join(home, "100%", "shareclip.db")}
-	if !hasLine(UnitFile(user), "ExecStart=/usr/local/bin/shareclip-server -a :9000 -d %h/100%%/shareclip.db -l 500 -m 33554432") {
+	if !hasLine(UnitFile(user), "ExecStart=/usr/local/bin/shareclip-server -a :9090 -d %h/100%%/shareclip.db -l 500 -m 33554432") {
 		t.Fatalf("用户级 %%h 应保留、其余 %% 应转义:\n%s", UnitFile(user))
 	}
 }
@@ -285,7 +285,7 @@ func TestPlan(t *testing.T) {
 func TestInstallWritesUnitAndRunsCommands(t *testing.T) {
 	dir := t.TempDir()
 	exe := writeExe(t)
-	o := Options{Scope: ScopeUser, UnitDir: dir, ExecPath: exe, Addr: ":9000", HistoryLimit: 500, MaxPayload: 32 << 20}
+	o := Options{Scope: ScopeUser, UnitDir: dir, ExecPath: exe, Addr: ":9090", HistoryLimit: 500, MaxPayload: 32 << 20}
 
 	calls := stubRun(t, "")
 	var out strings.Builder
@@ -495,7 +495,7 @@ func TestUnitFileExtraArgs(t *testing.T) {
 		MaxPayload:   32 << 20,
 	}
 	text := UnitFile(o)
-	want := `ExecStart=/usr/local/bin/shareclip-server -a :9000 -d /var/lib/share-clip/shareclip.db ` +
+	want := `ExecStart=/usr/local/bin/shareclip-server -a :9090 -d /var/lib/share-clip/shareclip.db ` +
 		`-l 500 -m 33554432 -q -n "100%% 机器" "带\"引号"`
 	if !hasLine(text, want) {
 		t.Fatalf("ExecStart 未按预期追加额外参数:\n%s", text)
@@ -529,7 +529,7 @@ func TestUnitFileNoAuth(t *testing.T) {
 		HistoryLimit: 500,
 		MaxPayload:   32 << 20,
 	}
-	want := "ExecStart=/usr/local/bin/shareclip-server -a :9000 -d /var/lib/share-clip/shareclip.db " +
+	want := "ExecStart=/usr/local/bin/shareclip-server -a :9090 -d /var/lib/share-clip/shareclip.db " +
 		"-l 500 -m 33554432 --no-auth"
 	if !hasLine(UnitFile(o), want) {
 		t.Fatalf("ExecStart 未包含 --no-auth:\n%s", UnitFile(o))
@@ -538,5 +538,199 @@ func TestUnitFileNoAuth(t *testing.T) {
 	o.NoAuth = false
 	if strings.Contains(UnitFile(o), "--no-auth") {
 		t.Fatalf("未开启 NoAuth 却写入了 --no-auth:\n%s", UnitFile(o))
+	}
+}
+
+func TestDefaultInstallDir(t *testing.T) {
+	if got, err := DefaultInstallDir(ScopeSystem); err != nil || got != "/opt/share-clip" {
+		t.Fatalf("系统级默认安装位置 = %q, %v", got, err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("无家目录，跳过用户级断言")
+	}
+	got, err := DefaultInstallDir(ScopeUser)
+	if err != nil || got != filepath.Join(home, ".local", "bin") {
+		t.Fatalf("用户级默认安装位置 = %q, %v", got, err)
+	}
+}
+
+func TestInstallBinaryCopiesAndSkips(t *testing.T) {
+	src := writeExe(t)
+	dir := filepath.Join(t.TempDir(), "opt", "share-clip")
+	out := &strings.Builder{}
+	dst, err := InstallBinary(src, dir, out)
+	if err != nil {
+		t.Fatalf("InstallBinary: %v", err)
+	}
+	if want := filepath.Join(dir, DefaultExecName()); dst != want {
+		t.Fatalf("目标路径 = %q，期望 %q", dst, want)
+	}
+	info, err := os.Stat(dst)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("目标权限异常: %v %v", err, info.Mode())
+	}
+	// 原地安装：源就是目标时跳过复制且不报错。
+	if again, err := InstallBinary(dst, dir, out); err != nil || again != dst {
+		t.Fatalf("原地安装应跳过复制: %q, %v", again, err)
+	}
+	if !strings.Contains(out.String(), "跳过复制") {
+		t.Fatalf("应提示跳过复制，输出: %s", out.String())
+	}
+	// 相对目录直接拒绝，避免把文件放到意外位置。
+	if _, err := InstallBinary(src, "relative/dir", out); err == nil {
+		t.Fatal("相对安装目录应当报错")
+	}
+}
+
+func TestUnitFileEmbedsKeyFile(t *testing.T) {
+	o := Options{ExecPath: "/opt/share-clip/shareclip-server", KeyFile: "/opt/share-clip/shareclip.key"}
+	text := UnitFile(o)
+	// key 不再进 ExecStart，只留一行 EnvironmentFile 引用。
+	if !hasLine(text, "ExecStart=/opt/share-clip/shareclip-server -a :9090 -d /var/lib/share-clip/shareclip.db -l 500 -m 33554432") {
+		t.Fatalf("ExecStart 不应包含 key:\n%s", text)
+	}
+	if !hasLine(text, "EnvironmentFile=/opt/share-clip/shareclip.key") {
+		t.Fatalf("缺少 EnvironmentFile 行:\n%s", text)
+	}
+	// 用户级：家目录下的 key 文件写成 %h 说明符。
+	home, err := os.UserHomeDir()
+	if err == nil {
+		user := Options{Scope: ScopeUser, ExecPath: "/usr/local/bin/shareclip-server", KeyFile: filepath.Join(home, ".local", "bin", "shareclip.key")}
+		if !hasLine(UnitFile(user), "EnvironmentFile=%h/.local/bin/shareclip.key") {
+			t.Fatalf("用户级 EnvironmentFile 应使用 %%h 说明符:\n%s", UnitFile(user))
+		}
+	}
+	if got := environmentFileOf(text); got != "/opt/share-clip/shareclip.key" {
+		t.Fatalf("environmentFileOf 解析 = %q", got)
+	}
+}
+
+func TestInstallWritesUnitWithKeyFile(t *testing.T) {
+	stubRun(t, "")
+	unitDir := t.TempDir()
+	o := Options{
+		Scope:    ScopeUser, // 系统级要求 root；写文件逻辑两个作用域共用
+		ExecPath: writeExe(t),
+		UnitDir:  unitDir,
+		KeyFile:  "/opt/share-clip/shareclip.key",
+	}
+	if err := Install(context.Background(), o, io.Discard); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	path := filepath.Join(unitDir, "share-clip.service")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 单元正文里没有 key，权限保持常规 0644。
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("单元文件权限 = %v，期望 0644", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "sup3r") {
+		t.Fatal("单元里不应出现 key 值")
+	}
+	if EnvironmentFileOf(o) != "/opt/share-clip/shareclip.key" {
+		t.Fatalf("EnvironmentFileOf = %q", EnvironmentFileOf(o))
+	}
+}
+
+func TestPurgeTargetsParsesUnit(t *testing.T) {
+	unitDir := t.TempDir()
+	o := Options{UnitDir: unitDir, Purge: true}
+	unit := `[Service]
+EnvironmentFile=/opt/share-clip/shareclip.key
+ExecStart="/opt/share-clip/shareclip-server" -a :9090 -d "/opt/share-clip/100%% data/shareclip.db" -l 500
+`
+	if err := os.WriteFile(filepath.Join(unitDir, "share-clip.service"), []byte(unit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exe, db, key := PurgeTargets(o)
+	if exe != "/opt/share-clip/shareclip-server" {
+		t.Fatalf("exe = %q", exe)
+	}
+	// %% 必须还原成字面量 %，否则拼不回真实路径。
+	if db != "/opt/share-clip/100% data/shareclip.db" {
+		t.Fatalf("db = %q", db)
+	}
+	if key != "/opt/share-clip/shareclip.key" {
+		t.Fatalf("key = %q", key)
+	}
+	// 文件名不符合本工具约定的单元：宁可不删，返回空。
+	other := `[Service]
+EnvironmentFile=/etc/httpd/secrets.env
+ExecStart=/usr/sbin/httpd -d /srv/data/app.db
+`
+	if err := os.WriteFile(filepath.Join(unitDir, "share-clip.service"), []byte(other), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if exe, db, key := PurgeTargets(o); exe != "" || db != "" || key != "" {
+		t.Fatalf("陌生单元不应还原出删除目标，得到 %q %q %q", exe, db, key)
+	}
+}
+
+func TestPurgeInstalledFiles(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, DefaultExecName())
+	db := filepath.Join(dir, DefaultDBName())
+	key := filepath.Join(dir, "shareclip.key")
+	for _, f := range []string{exe, db, db + "-wal", key} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := &strings.Builder{}
+	if err := purgeInstalledFiles(exe, db, key, out); err != nil {
+		t.Fatalf("purgeInstalledFiles: %v", err)
+	}
+	for _, f := range []string{exe, db, db + "-wal", key} {
+		if _, err := os.Stat(f); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s 未被删除", f)
+		}
+	}
+	// 再来一次：全部不存在也不报错（幂等）。
+	if err := purgeInstalledFiles(exe, db, key, out); err != nil {
+		t.Fatalf("重复删除应幂等: %v", err)
+	}
+}
+
+func TestPrepareDataSystemCustomDirForDynamicUser(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 下 chmod 行为不同，跳过")
+	}
+	dir := t.TempDir()
+	o := Options{DBPath: filepath.Join(dir, "sub", DefaultDBName())}
+	out := &strings.Builder{}
+	if err := PrepareData(o, out); err != nil {
+		t.Fatalf("PrepareData: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o777 {
+		t.Fatalf("动态用户目录应放宽为 0777，得到 %v", info.Mode().Perm())
+	}
+	if !strings.Contains(out.String(), "0777") {
+		t.Fatalf("应打印放宽权限的警告，输出: %s", out.String())
+	}
+}
+
+func TestPrepareDataUserScope(t *testing.T) {
+	dir := t.TempDir()
+	o := Options{Scope: ScopeUser, DBPath: filepath.Join(dir, "data", DefaultDBName())}
+	if err := PrepareData(o, io.Discard); err != nil {
+		t.Fatalf("PrepareData: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("用户级数据目录权限 = %v，期望 0700", info.Mode().Perm())
 	}
 }

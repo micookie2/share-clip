@@ -5,8 +5,8 @@
 // 一遍注册、帮助里也会各印一行（还容易漏掉默认值说明）。本包把这层重复收掉，
 // 于是日常启动可以直接写最短的形式：
 //
-//	shareclip-client -s 192.168.1.10:9000
-//	shareclip-server -a :9000 -l 500
+//	shareclip-client -s 192.168.1.10:9090
+//	shareclip-server -a :9090 -l 500
 package cli
 
 import (

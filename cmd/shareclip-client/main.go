@@ -46,7 +46,7 @@ func main() {
 	build := buildinfo.Get()
 	fs := cli.New("shareclip-client")
 	var (
-		serverAddr = fs.String("s", "server", "", "share-clip server 地址，如 192.168.1.10:9000；不带参数双击运行时在界面里设置")
+		serverAddr = fs.String("s", "server", "", "share-clip server 地址，如 192.168.1.10:9090；不带参数双击运行时在界面里设置")
 		key        = fs.String("k", "key", "", "server 的访问 key（server 启动日志里打印；server 用 --no-auth 时留空）")
 		name       = fs.String("n", "name", "", "本机显示名（默认使用主机名）")
 		pollMs     = fs.Int("p", "poll", appconfig.DefaultPollMs, "剪贴板监听兜底轮询间隔（毫秒）：X11 默认由 XFixes 复制事件驱动，仅事件不可用时按此轮询；Wayland/GNOME 等无事件通道的平台按此轮询")
@@ -60,7 +60,7 @@ func main() {
 	)
 	fs.SetIntro(fmt.Sprintf(`share-clip client %s
 用法: shareclip-client                      # 双击运行：托盘常驻 + 本地设置/日志界面
-     shareclip-client -s 192.168.1.10:9000 -k <访问key>   # 控制台模式，适合脚本/开机自启
+     shareclip-client -s 192.168.1.10:9090 -k <访问key>   # 控制台模式，适合脚本/开机自启
      shareclip-client --console             # 控制台模式，服务器地址与 key 取自保存的配置
 
 没给 -s 时进入桌面模式：图标常驻系统托盘，同时用浏览器打开本地界面
@@ -344,7 +344,7 @@ func runConsole(ctx context.Context, build buildinfo.Info, serverAddr, key, name
 		}
 	}
 	if serverAddr == "" {
-		return errors.New("请用 -s 指定 server 地址，例如 shareclip-client -s 192.168.1.10:9000；或双击运行后在界面里设置")
+		return errors.New("请用 -s 指定 server 地址，例如 shareclip-client -s 192.168.1.10:9090；或双击运行后在界面里设置")
 	}
 	addr, err := appconfig.NormalizeServer(serverAddr)
 	if err != nil {

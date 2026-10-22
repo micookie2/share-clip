@@ -26,7 +26,7 @@ var webuiFS embed.FS
 
 // Config configures the share-clip server.
 type Config struct {
-	Addr         string // listen address, e.g. ":9000"
+	Addr         string // listen address, e.g. ":9090"
 	DBPath       string // SQLite database file, e.g. "shareclip.db"
 	HistoryLimit int    // max history entries kept (pruned automatically)
 	MaxPayload   int    // max accepted clipboard payload in bytes
@@ -42,7 +42,7 @@ type Config struct {
 
 // Defaults used when Config fields are zero.
 const (
-	DefaultAddr       = ":9000"
+	DefaultAddr       = ":9090"
 	DefaultDBPath     = "shareclip.db"
 	DefaultHistory    = 500
 	DefaultMaxPayload = 32 << 20

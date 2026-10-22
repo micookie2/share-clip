@@ -27,7 +27,7 @@ import (
 const (
 	DefaultPollMs     = 1000
 	DefaultMaxPayload = protocol.DefaultMaxPayload
-	DefaultPort       = "9000"
+	DefaultPort       = "9090"
 )
 
 // dirName 是配置目录名，fileName 是配置文件名，logFileName 是桌面模式日志文件。
@@ -151,7 +151,7 @@ func (c Config) Save() error {
 func NormalizeServer(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
-		return "", errors.New("请填写 server 地址，例如 192.168.1.10:9000")
+		return "", errors.New("请填写 server 地址，例如 192.168.1.10:9090")
 	}
 	// 去掉协议前缀与路径：只保留 host[:port]。
 	if i := strings.Index(s, "://"); i >= 0 {
@@ -162,7 +162,7 @@ func NormalizeServer(raw string) (string, error) {
 	}
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return "", errors.New("server 地址不完整，例如 192.168.1.10:9000")
+		return "", errors.New("server 地址不完整，例如 192.168.1.10:9090")
 	}
 
 	host, port, err := splitHostPort(s)
@@ -176,7 +176,7 @@ func NormalizeServer(raw string) (string, error) {
 		return "", fmt.Errorf("端口 %q 不合法", port)
 	}
 	if host == "" {
-		return "", errors.New("server 地址缺少主机名，例如 192.168.1.10:9000")
+		return "", errors.New("server 地址缺少主机名，例如 192.168.1.10:9090")
 	}
 	if strings.ContainsAny(host, " \t") {
 		return "", fmt.Errorf("server 地址 %q 含有空格", host)
@@ -186,9 +186,9 @@ func NormalizeServer(raw string) (string, error) {
 
 // splitHostPort 把 s 拆成主机与端口，兼容以下写法：
 //
-//	192.168.1.10:9000   host:port
+//	192.168.1.10:9090   host:port
 //	192.168.1.10        省略端口
-//	[fe80::1]:9000      带方括号的 IPv6
+//	[fe80::1]:9090      带方括号的 IPv6
 //	fe80::1             裸 IPv6（无端口，不能按冒号切分）
 func splitHostPort(s string) (host, port string, err error) {
 	if strings.HasPrefix(s, "[") {
@@ -213,10 +213,10 @@ func splitHostPort(s string) (host, port string, err error) {
 		return h, p, nil
 	default:
 		// 多个冒号且没有方括号：只能是不带端口的 IPv6 字面量。用 ParseIP
-		// 兜住 "host:9000:9000" 这类多写了端口的输入，否则会被当成合法主机
+		// 兜住 "host:9090:9090" 这类多写了端口的输入，否则会被当成合法主机
 		// 名带进连接阶段，只能以更难懂的错误收场。
 		if net.ParseIP(s) == nil {
-			return "", "", fmt.Errorf("server 地址 %q 不合法，正确写法如 192.168.1.10:9000", s)
+			return "", "", fmt.Errorf("server 地址 %q 不合法，正确写法如 192.168.1.10:9090", s)
 		}
 		return s, "", nil
 	}

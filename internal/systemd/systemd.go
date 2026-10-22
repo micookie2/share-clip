@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -41,36 +42,45 @@ const (
 const (
 	defaultHistory    = 500
 	defaultMaxPayload = 32 << 20
-	defaultAddr       = ":9000"
+	defaultAddr       = ":9090"
 )
 
-// 单元文件里的固定内容。
+// 单元文件里的固定内容与安装布局。
 const (
 	unitDescription   = "share-clip clipboard sharing server"
 	unitDocumentation = "https://github.com/micookie2/share-clip"
 	serviceSuffix     = ".service"
 	systemStateDir    = "/var/lib/share-clip"
 	userStateSubdir   = ".local/share/share-clip"
+	userBinSubdir     = ".local/bin"
+	systemInstallDir  = "/opt/share-clip"
+	execName          = "shareclip-server"
+	dbName            = "shareclip.db"
+	keyName           = "shareclip.key" // 与 keyfile.FileName 一致，删除时以此设限
 	unitFileMode      = 0o644
 	unitDirMode       = 0o755
+	installDirMode    = 0o755
+	execFileMode      = 0o755
+	dataDirMode       = 0o755
 )
 
 // Options 描述要生成的单元以及如何安装它。
 type Options struct {
 	Scope        Scope    // 单元作用域
 	Unit         string   // 单元名（不含 ".service"）；空表示 share-clip
-	ExecPath     string   // shareclip-server 可执行文件的绝对路径
-	Addr         string   // server -a 的值，如 ":9000"
+	ExecPath     string   // shareclip-server 可执行文件的绝对路径（安装后的位置）
+	Addr         string   // server -a 的值，如 ":9090"
 	DBPath       string   // server -d 的值；空则按作用域推导
 	HistoryLimit int      // server -l 的值
 	MaxPayload   int      // server -m 的值
+	KeyFile      string   // 非空 => 单元加 EnvironmentFile= 行（文件里是 SHARECLIP_KEY=…，key 不进单元/日志）
 	RunAs        string   // 非空 => User=<RunAs>；空 => DynamicUser=yes（仅系统级）
 	NoAuth       bool     // 追加 --no-auth：关闭 server 的访问鉴权
 	ExtraArgs    []string // 追加到 ExecStart 末尾的额外参数（如 -q），逐个加引号
 	UnitDir      string   // 覆盖单元目录（测试用）
 	NoStart      bool     // 只 enable，不立即启动
 	Force        bool     // 覆盖已存在的单元文件
-	Purge        bool     // 仅 Uninstall：同时删除数据目录
+	Purge        bool     // 仅 Uninstall：同时删除数据目录、安装的可执行文件与数据库
 }
 
 // run 是执行外部命令的唯一入口，测试通过替换它来避免真的调用 systemctl。
@@ -83,6 +93,25 @@ var run = func(ctx context.Context, out io.Writer, name string, args ...string) 
 
 // DefaultUnitName 返回默认单元名（不含 ".service"）。
 func DefaultUnitName() string { return "share-clip" }
+
+// DefaultExecName 返回安装到目标目录里的可执行文件名。
+func DefaultExecName() string { return execName }
+
+// DefaultDBName 返回数据目录里的默认数据库文件名。
+func DefaultDBName() string { return dbName }
+
+// DefaultInstallDir 返回按作用域推导的默认可执行文件安装位置：系统级为
+// /opt/share-clip，用户级为 <home>/.local/bin（若已在 PATH 中则开箱可用）。
+func DefaultInstallDir(scope Scope) (string, error) {
+	if scope == ScopeUser {
+		home := homeDir()
+		if home == "" {
+			return "", errors.New("无法确定家目录，请用 --dir 指定用户级安装位置")
+		}
+		return filepath.Join(home, filepath.FromSlash(userBinSubdir)), nil
+	}
+	return systemInstallDir, nil
+}
 
 // StateDir 返回服务的数据目录：系统级为 /var/lib/share-clip，用户级为
 // <home>/.local/share/share-clip；家目录不可知时用户级返回空字符串。
@@ -99,7 +128,7 @@ func StateDir(o Options) string {
 
 // DefaultDBPath 返回按作用域推导出的默认数据库路径。
 func DefaultDBPath(o Options) string {
-	return filepath.Join(StateDir(o), "shareclip.db")
+	return filepath.Join(StateDir(o), dbName)
 }
 
 // UnitPath 返回单元文件的落盘路径：优先使用 UnitDir，否则按作用域取默认目录。
@@ -142,6 +171,11 @@ func UnitFile(o Options) string {
 	line("RestartSec=2")
 	line("StandardOutput=journal")
 	line("StandardError=journal")
+	if o.KeyFile != "" {
+		// key 放在 EnvironmentFile 指向的 shareclip.key 里：由 systemd 以
+		// root 读取注入环境，不出现在单元正文、journal 或 ps 参数里。
+		line("EnvironmentFile=" + quoteArg(unitKeyFile(o)))
+	}
 
 	if o.Scope == ScopeUser {
 		// 用户级：用 %h 说明符指向家目录，避免写死用户名；不能加 ProtectHome，
@@ -254,6 +288,11 @@ func Uninstall(ctx context.Context, o Options, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// 先记住单元指向的安装文件与 key 文件：单元文件一删，这些信息就没了。
+	var exe, db, key string
+	if o.Purge {
+		exe, db, key = PurgeTargets(o)
+	}
 	cmds := Commands(o, ActionUninstall)
 	if err := runCommand(ctx, out, cmds[0]); err != nil {
 		fmt.Fprintf(out, "忽略失败（服务可能未运行）: %v\n", err)
@@ -273,10 +312,17 @@ func Uninstall(ctx context.Context, o Options, out io.Writer) error {
 	if err := runCommand(ctx, out, cmds[2]); err != nil {
 		fmt.Fprintf(out, "忽略失败: %v\n", err)
 	}
-	if o.Purge {
-		return purgeStateDir(o, out)
+	if !o.Purge {
+		return nil
 	}
-	return nil
+	var firstErr error
+	if err := purgeStateDir(o, out); err != nil {
+		firstErr = err
+	}
+	if err := purgeInstalledFiles(exe, db, key, out); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // runCommand 先打印命令再执行，并把子进程输出直接写到 out。
@@ -348,6 +394,300 @@ func purgeStateDir(o Options, out io.Writer) error {
 	return nil
 }
 
+// --- 安装布局：复制可执行文件与准备数据目录 ---------------------------------
+
+// InstallBinary 把可执行文件 src 复制到安装目录 dir 下（文件名固定为
+// shareclip-server）。先写临时文件再 rename，原子替换——升级安装时即便旧副本
+// 正在运行也不会出现写了一半的可执行文件。若 src 与目标本来就是同一个文件，
+// 只确认路径并跳过复制。返回安装后的绝对路径。
+func InstallBinary(src, dir string, out io.Writer) (string, error) {
+	if src == "" {
+		return "", errors.New("未提供源可执行文件路径")
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("安装目录必须是绝对路径: %s", dir)
+	}
+	if err := os.MkdirAll(dir, installDirMode); err != nil {
+		return "", fmt.Errorf("创建安装目录失败 %s: %w", dir, err)
+	}
+	dst := filepath.Join(dir, execName)
+	if abs, err := filepath.Abs(src); err == nil && filepath.Clean(abs) == filepath.Clean(dst) {
+		fmt.Fprintf(out, "可执行文件已在安装位置，跳过复制: %s\n", dst)
+		return dst, nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return "", fmt.Errorf("打开源文件失败 %s: %w", src, err)
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("源文件不存在或不是普通文件: %s", src)
+	}
+	tmp, err := os.CreateTemp(dir, execName+".tmp-*")
+	if err != nil {
+		return "", fmt.Errorf("创建临时文件失败 %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // rename 成功后这句是无害的 no-op
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("复制可执行文件失败 %s → %s: %w", src, dst, err)
+	}
+	if err := tmp.Chmod(execFileMode); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("设置可执行权限失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		return "", fmt.Errorf("安装到 %s 失败（是否权限不足？）: %w", dst, err)
+	}
+	fmt.Fprintf(out, "已安装可执行文件: %s\n", dst)
+	return dst, nil
+}
+
+// PrepareData 在安装前准备数据库所在目录。默认数据目录（系统级
+// /var/lib/share-clip）交给 systemd 的 StateDirectory= 自动创建与授权；
+// 自定义目录则需要这里处理：
+//
+//   - 用户级：以当前用户身份建好即可（服务与安装者同一个人）；
+//   - 系统级且指定了 --run-as：建目录并 chown 给该用户，权限 0750；
+//   - 系统级且用 DynamicUser：动态用户的 UID 不可预知，只能把目录放宽到
+//     0777 并打印警告——这是能自动跑通的最低要求，建议改用 --run-as。
+func PrepareData(o Options, out io.Writer) error {
+	db := dbPath(o)
+	if !filepath.IsAbs(db) {
+		return nil // 相对路径由 WorkingDirectory 决定去向，不越权处理
+	}
+	dir := filepath.Dir(db)
+	if o.Scope == ScopeUser {
+		return os.MkdirAll(dir, 0o700)
+	}
+	if dir == systemStateDir {
+		return nil // StateDirectory=share-clip：systemd 启动时自动创建并授权
+	}
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
+		return fmt.Errorf("创建数据目录失败 %s: %w", dir, err)
+	}
+	if o.RunAs != "" {
+		uid, gid, err := lookupUserID(o.RunAs)
+		if err != nil {
+			return err
+		}
+		if err := os.Chown(dir, uid, gid); err != nil {
+			return fmt.Errorf("数据目录授权给用户 %s 失败 %s: %w", o.RunAs, dir, err)
+		}
+		if err := os.Chmod(dir, 0o750); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "数据目录已就绪并交给用户 %s: %s\n", o.RunAs, dir)
+		return nil
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "警告: 数据目录 %s 已放宽为 0777（systemd 动态用户才能写入）；建议创建专用系统用户并用 --run-as 指定\n", dir)
+	return nil
+}
+
+// lookupUserID 按登录名解析 uid/gid，供数据目录 chown 使用。
+func lookupUserID(name string) (int, int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, 0, fmt.Errorf("查找用户 %q 失败（如需以该用户运行请先创建它）: %w", name, err)
+	}
+	uid, err1 := strconv.Atoi(u.Uid)
+	gid, err2 := strconv.Atoi(u.Gid)
+	if err1 != nil || err2 != nil {
+		return 0, 0, fmt.Errorf("用户 %q 的 uid/gid 异常（%s/%s）", name, u.Uid, u.Gid)
+	}
+	return uid, gid, nil
+}
+
+// --- 卸载时的安装文件回收 -----------------------------------------------------
+
+// PurgeTargets 解析磁盘上已有的单元文件，从 ExecStart 行与 EnvironmentFile 行
+// 还原本次安装写入的可执行文件、数据库与 key 文件路径。找不到单元、解析失败
+// 或路径可疑（不匹配本工具约定的文件名、含无法展开的说明符）时对应项返回空
+// 字符串，调用方据此跳过删除。
+func PurgeTargets(o Options) (exe, db, key string) {
+	unitPath, err := UnitPath(o)
+	if err != nil {
+		return "", "", ""
+	}
+	data, err := os.ReadFile(unitPath)
+	if err != nil {
+		return "", "", ""
+	}
+	tokens := execStartTokens(string(data))
+	if len(tokens) == 0 {
+		return "", "", ""
+	}
+	if v, ok := unescapeUnitPath(tokens[0]); ok && filepath.Base(v) == execName {
+		exe = v
+	}
+	for i, t := range tokens {
+		if t != "-d" || i+1 >= len(tokens) {
+			continue
+		}
+		if v, ok := unescapeUnitPath(tokens[i+1]); ok && filepath.Base(v) == dbName {
+			db = v
+		}
+		break
+	}
+	// key 文件同样只认本工具约定的文件名：别人的单元里 EnvironmentFile 可以
+	// 指向任何路径，绝不能被 uninstall --purge 顺手删掉。
+	if k := environmentFileOf(string(data)); k != "" && filepath.Base(k) == keyName {
+		key = k
+	}
+	return exe, db, key
+}
+
+// EnvironmentFileOf 读取磁盘上已有的单元文件，返回其 EnvironmentFile= 指向
+// 的绝对路径（%h 与 %% 已展开）；单元不存在、没有该行或路径无法展开时返回
+// 空字符串。key 子命令用它定位安装时生成的 key 文件。
+func EnvironmentFileOf(o Options) string {
+	unitPath, err := UnitPath(o)
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(unitPath)
+	if err != nil {
+		return ""
+	}
+	return environmentFileOf(string(data))
+}
+
+// environmentFileOf 从单元文本解析 EnvironmentFile= 行（取第一条）。
+func environmentFileOf(unitText string) string {
+	for _, line := range strings.Split(unitText, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "EnvironmentFile=") {
+			continue
+		}
+		v := strings.TrimPrefix(line, "EnvironmentFile=")
+		v = strings.TrimPrefix(v, "-") // 容忍「文件可缺失」的 - 前缀写法
+		toks := splitExecArgs(v)
+		if len(toks) == 0 {
+			return ""
+		}
+		if p, ok := unescapeUnitPath(toks[0]); ok {
+			return p
+		}
+		return ""
+	}
+	return ""
+}
+
+// unescapeUnitPath 把单元里的路径还原成真实文件系统路径：%h 前缀展开为家目录、
+// %% 还原为字面量 %。含其它 %x 说明符（家目录未知等）时返回 false——宁可放弃
+// 删除，也不对着猜出来的路径动手。
+func unescapeUnitPath(raw string) (string, bool) {
+	p := raw
+	if p == "%h" || strings.HasPrefix(p, "%h/") {
+		home := homeDir()
+		if home == "" {
+			return "", false
+		}
+		p = filepath.Join(home, filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(p, "%h"), "/")))
+	}
+	// 先用哨兵保护 %%（字面量），剩下的 % 就一定是没展开的说明符。
+	const sentinel = "\x00"
+	p = strings.ReplaceAll(p, "%%", sentinel)
+	if strings.Contains(p, "%") {
+		return "", false
+	}
+	p = filepath.Clean(strings.ReplaceAll(p, sentinel, "%"))
+	if !filepath.IsAbs(p) {
+		return "", false
+	}
+	return p, true
+}
+
+// purgeInstalledFiles 删除 PurgeTargets 还原出的可执行文件、数据库文件
+// （含 WAL/SHM 伴生文件）与 key 文件。不删除它们所在的目录——目录里可能有
+// 用户的其它文件。
+func purgeInstalledFiles(exe, db, key string, out io.Writer) error {
+	var firstErr error
+	for _, f := range []string{exe, db, db + "-wal", db + "-shm", key} {
+		if f == "" {
+			continue
+		}
+		switch err := os.Remove(f); {
+		case err == nil:
+			fmt.Fprintf(out, "已删除: %s\n", f)
+		case errors.Is(err, fs.ErrNotExist):
+			// 可能已随数据目录一起被删；不算错误。
+		default:
+			if firstErr == nil {
+				firstErr = fmt.Errorf("删除失败 %s: %w", f, err)
+			}
+		}
+	}
+	return firstErr
+}
+
+// execStartTokens 从单元文本里取出第一条 ExecStart 行的参数列表：按 systemd
+// 的习惯处理双引号与 \" \\ \n \t 转义；%% 与说明符原样保留，由调用方还原。
+func execStartTokens(unitText string) []string {
+	for _, line := range strings.Split(unitText, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		return splitExecArgs(strings.TrimPrefix(line, "ExecStart="))
+	}
+	return nil
+}
+
+// splitExecArgs 是 ExecStart 值的最小分词器（引号 + C 转义 + %% 还原）。
+func splitExecArgs(s string) []string {
+	var (
+		tokens  []string
+		cur     strings.Builder
+		quoted  bool
+		escaped bool
+	)
+	flush := func() {
+		if cur.Len() > 0 {
+			// 保留原始 %：%% 字面量与 %h 说明符的区分交给 unescapeUnitPath。
+			tokens = append(tokens, cur.String())
+			cur.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case escaped:
+			switch c {
+			case 'n':
+				cur.WriteByte('\n')
+			case 'r':
+				cur.WriteByte('\r')
+			case 't':
+				cur.WriteByte('\t')
+			default:
+				cur.WriteByte(c)
+			}
+			escaped = false
+		case quoted && c == '\\':
+			escaped = true
+		case quoted && c == '"':
+			quoted = false
+		case !quoted && c == '"':
+			quoted = true
+		case !quoted && (c == ' ' || c == '\t'):
+			flush()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return tokens
+}
+
 // --- 纯计算辅助函数 ---------------------------------------------------------
 
 // execStart 拼出 ExecStart 行，参数按 systemd 规则各自加引号。
@@ -391,6 +731,18 @@ func unitDBPath(o Options) string {
 		return withHomeSpecifier(dbPath(o))
 	}
 	return escapePercent(dbPath(o))
+}
+
+// unitKeyFile 返回 EnvironmentFile= 的路径，规则与 unitDBPath 相同（用户级
+// 家目录写成 %h 说明符）；o.KeyFile 为空时返回空字符串。
+func unitKeyFile(o Options) string {
+	if o.KeyFile == "" {
+		return ""
+	}
+	if o.Scope == ScopeUser {
+		return withHomeSpecifier(o.KeyFile)
+	}
+	return escapePercent(o.KeyFile)
 }
 
 // readWriteDir 返回系统级单元需要放行的可写目录（数据库所在目录）。

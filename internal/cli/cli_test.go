@@ -20,16 +20,16 @@ func TestShortAndLongAreEquivalent(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"简写 + 空格", []string{"-s", "1.2.3.4:9000"}},
-		{"长写 + 等号", []string{"--server=1.2.3.4:9000"}},
-		{"单横线也算长写", []string{"-server", "1.2.3.4:9000"}},
+		{"简写 + 空格", []string{"-s", "1.2.3.4:9090"}},
+		{"长写 + 等号", []string{"--server=1.2.3.4:9090"}},
+		{"单横线也算长写", []string{"-server", "1.2.3.4:9090"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c, server, poll, quiet := newCmd()
 			c.ParseArgs(tc.args)
-			if got := *server; got != "1.2.3.4:9000" {
-				t.Errorf("-s/--server 解析结果 = %q, 期望 %q", got, "1.2.3.4:9000")
+			if got := *server; got != "1.2.3.4:9090" {
+				t.Errorf("-s/--server 解析结果 = %q, 期望 %q", got, "1.2.3.4:9090")
 			}
 			// 未出现的选项必须保持默认值，别名注册不能把默认值覆盖成零值。
 			if *poll != 1000 {
@@ -85,7 +85,7 @@ func TestUsageMergesNames(t *testing.T) {
 	c := New("shareclip-server")
 	c.SetOutput(&buf)
 	c.SetIntro("share-clip server 0.1.0")
-	c.String("a", "addr", ":9000", "监听地址")
+	c.String("a", "addr", ":9090", "监听地址")
 	c.Int("l", "history-limit", 500, "历史保留条数")
 	c.Bool("q", "quiet", false, "减少日志")
 
@@ -94,7 +94,7 @@ func TestUsageMergesNames(t *testing.T) {
 
 	for _, want := range []string{
 		"-a, --addr string",
-		"监听地址（默认 :9000）",
+		"监听地址（默认 :9090）",
 		"-l, --history-limit int",
 		"-q, --quiet",
 		"减少日志",
@@ -120,7 +120,7 @@ func TestChangedReportsExplicitFlagsOnly(t *testing.T) {
 	server := c.String("s", "server", "", "server 地址")
 	poll := c.Int("p", "poll", 1000, "轮询间隔")
 	quiet := c.Bool("q", "quiet", false, "减少日志")
-	c.ParseArgs([]string{"-s", "1.2.3.4:9000", "-q"})
+	c.ParseArgs([]string{"-s", "1.2.3.4:9090", "-q"})
 
 	// 简写与长写法都算「出现过」——客户端正是靠它区分「双击运行」和「脚本传了 -s」。
 	if !c.Changed("s", "server") {
@@ -132,7 +132,7 @@ func TestChangedReportsExplicitFlagsOnly(t *testing.T) {
 	if c.Changed("p", "poll") {
 		t.Error("没给 -p 却报告 poll 已设置")
 	}
-	if *poll != 1000 || *server != "1.2.3.4:9000" || !*quiet {
+	if *poll != 1000 || *server != "1.2.3.4:9090" || !*quiet {
 		t.Errorf("解析结果不对: server=%q poll=%d quiet=%v", *server, *poll, *quiet)
 	}
 
@@ -148,7 +148,7 @@ func TestChangedReportsExplicitFlagsOnly(t *testing.T) {
 func TestStringsCollectsEveryOccurrence(t *testing.T) {
 	c := New("demo")
 	extra := c.Strings("", "exec-arg", "追加参数")
-	addr := c.String("a", "addr", ":9000", "监听地址")
+	addr := c.String("a", "addr", ":9090", "监听地址")
 	c.ParseArgs([]string{"--exec-arg=-q", "--exec-arg", "-l", "--exec-arg=1000", "-a", ":9100"})
 
 	// 与普通选项相反：可重复选项每次出现都要留下，不能被后一次覆盖。

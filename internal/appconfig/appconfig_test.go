@@ -20,7 +20,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	setConfigHome(t, dir)
 
-	want := Config{Server: "192.168.1.10:9000", Name: "desktop-1", PollMs: 750, MaxPayload: 4096}
+	want := Config{Server: "192.168.1.10:9090", Name: "desktop-1", PollMs: 750, MaxPayload: 4096}
 	if err := want.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -82,8 +82,8 @@ func TestLoadCorruptFileFallsBackToDefaults(t *testing.T) {
 }
 
 func TestWithDefaultsFillsZeroValues(t *testing.T) {
-	got := Config{Server: "  10.0.0.1:9000  ", PollMs: 0, MaxPayload: -1}.WithDefaults()
-	want := Config{Server: "10.0.0.1:9000", PollMs: DefaultPollMs, MaxPayload: DefaultMaxPayload}
+	got := Config{Server: "  10.0.0.1:9090  ", PollMs: 0, MaxPayload: -1}.WithDefaults()
+	want := Config{Server: "10.0.0.1:9090", PollMs: DefaultPollMs, MaxPayload: DefaultMaxPayload}
 	if got != want {
 		t.Errorf("WithDefaults = %+v, want %+v", got, want)
 	}
@@ -95,23 +95,23 @@ func TestNormalizeServer(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{"192.168.1.10:9000", "192.168.1.10:9000", false},
-		{" 192.168.1.10:9000 ", "192.168.1.10:9000", false},
-		{"192.168.1.10", "192.168.1.10:9000", false},
-		{"ws://192.168.1.10:9000/ws", "192.168.1.10:9000", false},
+		{"192.168.1.10:9090", "192.168.1.10:9090", false},
+		{" 192.168.1.10:9090 ", "192.168.1.10:9090", false},
+		{"192.168.1.10", "192.168.1.10:9090", false},
+		{"ws://192.168.1.10:9090/ws", "192.168.1.10:9090", false},
 		{"http://share-clip.lan:9100", "share-clip.lan:9100", false},
 		// 本工具只走明文 ws://，因此带 https:// 前缀时同样落到默认端口。
-		{"https://example.com/", "example.com:9000", false},
-		{"localhost:9000", "localhost:9000", false},
-		{"[fe80::1]:9000", "[fe80::1]:9000", false},
-		{"fe80::1", "[fe80::1]:9000", false},
+		{"https://example.com/", "example.com:9090", false},
+		{"localhost:9090", "localhost:9090", false},
+		{"[fe80::1]:9090", "[fe80::1]:9090", false},
+		{"fe80::1", "[fe80::1]:9090", false},
 		{"", "", true},
 		{"   ", "", true},
 		{"host:0", "", true},
 		{"host:70000", "", true},
 		{"host:abc", "", true},
-		{"host:9000:9000", "", true},
-		{"a b:9000", "", true},
+		{"host:9090:9090", "", true},
+		{"a b:9090", "", true},
 	}
 	for _, c := range cases {
 		got, err := NormalizeServer(c.in)
@@ -135,26 +135,26 @@ func TestValidate(t *testing.T) {
 	if err := Validate(Default()); err == nil {
 		t.Error("未配置 server 时应校验失败")
 	}
-	if err := Validate(Config{Server: "10.0.0.1:9000"}); err != nil {
+	if err := Validate(Config{Server: "10.0.0.1:9090"}); err != nil {
 		t.Errorf("合法地址应通过校验: %v", err)
 	}
-	if err := Validate(Config{Server: "10.0.0.1:9000", PollMs: 10}); err == nil {
+	if err := Validate(Config{Server: "10.0.0.1:9090", PollMs: 10}); err == nil {
 		t.Error("轮询间隔过小应校验失败")
 	}
-	if err := Validate(Config{Server: "10.0.0.1:9000", MaxPayload: 10}); err == nil {
+	if err := Validate(Config{Server: "10.0.0.1:9090", MaxPayload: 10}); err == nil {
 		t.Error("内容上限过小应校验失败")
 	}
 	// key 会进 WebSocket 握手请求头：控制字符必须被挡下。
-	if err := Validate(Config{Server: "10.0.0.1:9000", Key: "abc\ndef"}); err == nil {
+	if err := Validate(Config{Server: "10.0.0.1:9090", Key: "abc\ndef"}); err == nil {
 		t.Error("key 含换行应校验失败")
 	}
-	if err := Validate(Config{Server: "10.0.0.1:9000", Key: "abc\tdef"}); err == nil {
+	if err := Validate(Config{Server: "10.0.0.1:9090", Key: "abc\tdef"}); err == nil {
 		t.Error("key 含制表符应校验失败")
 	}
-	if err := Validate(Config{Server: "10.0.0.1:9000", Key: "good-key"}); err != nil {
+	if err := Validate(Config{Server: "10.0.0.1:9090", Key: "good-key"}); err != nil {
 		t.Errorf("普通 key 应通过校验: %v", err)
 	}
-	if err := Validate(Config{Server: "10.0.0.1:9000", Key: strings.Repeat("k", maxKeyLen+1)}); err == nil {
+	if err := Validate(Config{Server: "10.0.0.1:9090", Key: strings.Repeat("k", maxKeyLen+1)}); err == nil {
 		t.Error("超长 key 应校验失败")
 	}
 }
@@ -162,7 +162,7 @@ func TestValidate(t *testing.T) {
 func TestKeyRoundTripAndTrimming(t *testing.T) {
 	setConfigHome(t, t.TempDir())
 
-	want := Config{Server: "10.0.0.1:9000", Key: "abc123"}.WithDefaults()
+	want := Config{Server: "10.0.0.1:9090", Key: "abc123"}.WithDefaults()
 	if err := want.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestNormalizedAppliesAddressAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Normalized: %v", err)
 	}
-	if got.Server != "10.0.0.1:9000" {
+	if got.Server != "10.0.0.1:9090" {
 		t.Errorf("Server = %q", got.Server)
 	}
 	if got.PollMs != DefaultPollMs || got.MaxPayload != DefaultMaxPayload {
@@ -198,10 +198,10 @@ func TestSaveIsAtomicAndSelfContained(t *testing.T) {
 	dir := t.TempDir()
 	setConfigHome(t, dir)
 
-	if err := (Config{Server: "10.0.0.1:9000"}).Save(); err != nil {
+	if err := (Config{Server: "10.0.0.1:9090"}).Save(); err != nil {
 		t.Fatalf("首次 Save: %v", err)
 	}
-	if err := (Config{Server: "10.0.0.2:9000"}).Save(); err != nil {
+	if err := (Config{Server: "10.0.0.2:9090"}).Save(); err != nil {
 		t.Fatalf("二次 Save: %v", err)
 	}
 
@@ -209,8 +209,8 @@ func TestSaveIsAtomicAndSelfContained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Server != "10.0.0.2:9000" {
-		t.Errorf("Server = %q，期望覆盖为 10.0.0.2:9000", got.Server)
+	if got.Server != "10.0.0.2:9090" {
+		t.Errorf("Server = %q，期望覆盖为 10.0.0.2:9090", got.Server)
 	}
 
 	// 原子写入不应留下临时文件。

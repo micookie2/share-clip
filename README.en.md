@@ -34,14 +34,14 @@ its formatting while pasting into a plain-text field still yields plain text.
  │ client       │◄────push────►│ client       │
  │ tray + web UI│              │ tray + web UI│
  └──────┬───────┘  WebSocket   └──────┬───────┘
-        │  ws://host:9000/ws          │
+        │  ws://host:9090/ws          │
         └──────────────┬──────────────┘
                    ┌───▼────────────┐
                    │  shareclip-    │  always-on box (may also run a client)
-                   │  server :9000  │
+                   │  server :9090  │
                    │  + SQLite      │
                    └───┬────────────┘
-                       │ http://host:9000/
+                       │ http://host:9090/
                ┌───────▼────────┐
                │   Web UI       │ browser: history / push
                └────────────────┘
@@ -188,10 +188,13 @@ and the build instant then fall back to the VCS stamps Go embeds automatically
 ## Usage
 
 ```bash
-# 1) start the server on the always-on box (port 9000, shareclip.db in cwd).
+# 1) start the server on the always-on box (port 9090, shareclip.db in cwd).
 #    The startup log prints this run's access key — write it down:
 ./shareclip-server
 #    access key (random per start, changes on restart): uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
+#    want a boot-time systemd service instead? interactive install, defaults to
+#    /opt/share-clip/:
+sudo ./shareclip-server install
 
 # 2) start a client on every machine that should share its clipboard, either way:
 
@@ -204,10 +207,10 @@ and the build instant then fall back to the VCS stamps Go embeds automatically
 #    2b) console mode (scripts, autostart): pass the server address and access key
 #        explicitly; logs go to the terminal, no tray, no page. Passing -s or
 #        --console both take this path.
-./shareclip-client -s 192.168.1.10:9000 -k uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
+./shareclip-client -s 192.168.1.10:9090 -k uRRbv71iN9iVjHWHlhAp2OuSBncil6hl
 ./shareclip-client --console            # address and key come from the saved config
 
-# 3) just copy and paste as usual. Optionally open http://192.168.1.10:9000/ —
+# 3) just copy and paste as usual. Optionally open http://192.168.1.10:9090/ —
 #    it asks for the access key once, then lets you browse history and re-push an
 #    entry to all online clients.
 ```
@@ -220,14 +223,38 @@ systemd service" below).
 
 | Short | Long | Default | Description |
 |-------|------|---------|-------------|
-| `-a` | `--addr` | `:9000` | listen address; HTTP and WebSocket share one port |
+| `-a` | `--addr` | `:9090` | listen address; HTTP and WebSocket share one port |
 | `-d` | `--db` | `shareclip.db` | SQLite history database path |
 | `-l` | `--history-limit` | `500` | how many history entries to keep |
 | `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry |
-| `-k` | `--key` | empty (random per start) | fixed access key; when empty one is generated at startup and logged |
+| `-k` | `--key` | empty | fixed access key (wins over `-K` and the env var) |
+| `-K` | `--key-file` | empty | read the access key from a file — the `shareclip.key` written by `install` (format: `SHARECLIP_KEY=<key>`) |
 | — | `--no-auth` | false | disable access authentication (trusted LAN only, not recommended) |
 | `-q` | `--quiet` | false | less logging |
 | `-v` | `--version` | — | print version and build metadata (commit, build time, Go/platform) and exit |
+
+### Persisting the access key
+
+`install` generates one fixed key at setup time and writes it to
+`shareclip.key` **next to the installed executable** (default
+`/opt/share-clip/shareclip.key`, mode 0600). Every later start — reboots and
+upgrade re-installs included — keeps using that same key. It never appears in
+the unit body: the unit carries a single `EnvironmentFile=…/shareclip.key`
+line, which systemd reads as root and injects into the service, so the journal,
+`systemctl cat` and `ps` stay key-free.
+
+```bash
+sudo shareclip-server key                # show the current key and file path
+sudo shareclip-server key -r             # rotate to a fresh random key (restarts the service)
+sudo shareclip-server key --set <key>    # set a specific key
+shareclip-server key --user              # locate via the user-scope unit
+```
+
+After a change, every client and the web login must use the new key. The `key`
+command locates the file through the installed unit's `EnvironmentFile` first
+and falls back to `shareclip.key` beside the running binary. `uninstall --purge`
+also deletes the key file — but only files literally named `shareclip.key`,
+never another unit's EnvironmentFile.
 
 ### Client options
 
@@ -235,7 +262,7 @@ systemd service" below).
 |-------|------|---------|-------------|
 | `-s` | `--server` | — | server address `host:port`; omitting `-s` defaults to desktop mode (set the address in the UI), giving it defaults to console mode (`-g`/`-c` override the default) |
 | `-k` | `--key` | — | access key printed by the server at startup; leave empty when the server runs `--no-auth` |
-| `-g` | `--gui` | false | force desktop mode (tray + local UI), e.g. `--gui -s 1.2.3.4:9000` |
+| `-g` | `--gui` | false | force desktop mode (tray + local UI), e.g. `--gui -s 1.2.3.4:9090` |
 | `-c` | `--console` | false | force console mode; without `-s`/`-k` it reuses the address and key saved by the desktop UI |
 | `-n` | `--name` | hostname | machine name shown elsewhere |
 | `-p` | `--poll` | `1000` | fallback monitoring interval in ms: X11 is event driven (XFixes) and only polls when events are unavailable; Wayland (no event channel) polls at this interval |
@@ -252,30 +279,36 @@ mode and change nothing about how the other options are written.
 
 ### Access authentication (key)
 
-The server **requires authentication by default**: at startup it generates a
-random key (24 random bytes, base64url, 32 characters) and prints it to the log,
-then checks every entry point within the same process:
+The server **requires authentication by default**: unless a key is given (via
+`install`'s `shareclip.key`, `-k`, `-K` or `SHARECLIP_KEY`), it generates a
+random one at startup (24 random bytes, base64url, 32 characters) and prints it
+to the log. Every entry point is then checked within the same process:
 
 - **Client connections**: the WebSocket handshake must carry
   `X-Shareclip-Key: <key>` (the agent adds it automatically from the key you set
   with `-k` or in the UI). A missing or wrong key gets a `401` and never joins
   the online roster;
 - **Admin page and REST API**: the browser sees a login page on its first visit
-  to `http://<server>:9000/`. After the key is accepted the server issues an
+  to `http://<server>:9090/`. After the key is accepted the server issues an
   `HttpOnly`, `SameSite=Lax` **session cookie** (the token lives in memory and is
   not the key itself; it dies with the process), which then authorises the page,
   `/api/*` and SSE. You can also log in with
-  `http://<server>:9000/?key=<key>` — the page immediately swaps the key for the
+  `http://<server>:9090/?key=<key>` — the page immediately swaps the key for the
   cookie and strips it from the address bar so it does not sit in browser
   history;
 - Scripts and curl can send `X-Shareclip-Key: <key>` or
   `Authorization: Bearer <key>` directly.
 
-Common choices:
+Key resolution order: `-k` > `-K` file > env var `SHARECLIP_KEY` (what the
+installed systemd unit injects via `EnvironmentFile=`) > random per start.
 
-- **Keep the same key across restarts**: pass `-k <your-key>`. Note that command
-  line arguments are visible in the process list, so avoid this on shared
-  machines;
+- **Keep the same key across restarts**: install it as a service — `install`
+  generates one fixed key saved next to the binary as `shareclip.key` (default
+  `/opt/share-clip/shareclip.key`, mode 0600) and every later start, reboot or
+  upgrade keeps using it; view or change it with `shareclip-server key`
+  (`-r` to rotate, `--set` to assign). For ad-hoc runs use `-k`, `-K` or the
+  env var instead. Note that `-k` is visible in the local process list, so
+  prefer `-K`/file-based keys on shared machines;
 - **Where to get a fixed key**: anything random works, e.g.
   `head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '='` (up to 512 bytes,
   no control characters such as newlines or tabs);
@@ -283,14 +316,16 @@ Common choices:
   connect and read history; the server logs a warning at startup. Only use this
   on a fully trusted LAN.
 
-The key is never written to disk by the server (a natural consequence of
-generating it per start); on the client side the key you enter is stored in its
-config file (see desktop mode below).
+A plain server process never writes a key file — random-per-start stays
+ephemeral. Only `install` persists one: `shareclip.key` next to the installed
+binary, reused by every start, reboot and upgrade (see "Persisting the access
+key"). Keys typed into the client are saved in its config file (see the
+desktop mode section below).
 
 ### Desktop mode (tray + local UI)
 
 Running without `-s` (double-click works) enters desktop mode; `-g/--gui` forces
-it, e.g. `shareclip-client --gui -s 1.2.3.4:9000` (values given on the command
+it, e.g. `shareclip-client --gui -s 1.2.3.4:9090` (values given on the command
 line win over the saved config).
 
 - **Tray + browser page**: the tray icon stays resident and the local page opens
@@ -303,7 +338,7 @@ line win over the saved config).
   countdown) and live logs (pushed over SSE, clearable, auto-scroll); the footer
   shows the config and log file paths, whether the tray is available and the
   version/build metadata, plus a "quit client" button.
-- **Tray menu**: a disabled status line (e.g. `已连接：192.168.1.10:9000`,
+- **Tray menu**: a disabled status line (e.g. `已连接：192.168.1.10:9090`,
   "connected"), `打开设置与日志` (open settings and logs), an
   `启用同步`/`暂停同步` (enable/pause sync) checkbox, and `退出` (quit). Pausing
   disconnects from the server: nothing is sent or received while paused, and
@@ -346,33 +381,54 @@ line win over the saved config).
 
 ### Installing as a systemd service
 
+By default `install` is an **interactive installer**: it asks, one item at a
+time, for the install location, listen port, data directory, history limit,
+authentication, service user, unit name and start policy. Every question shows
+its default in `[brackets]` and pressing Enter accepts it; options already given
+explicitly on the command line are not asked again; the run finishes with a
+configuration summary and a confirmation before anything touches the disk. When
+stdin is not a terminal (pipes, CI) all questions are skipped — same effect as
+`--yes`.
+
 ```bash
-# system scope (needs root): /etc/systemd/system/share-clip.service, starts at boot
-sudo install -m755 bin/shareclip-server /usr/local/bin/shareclip-server  # fixed path first
-sudo shareclip-server install
+# system scope (needs root): the binary is installed into /opt/share-clip/,
+# the unit goes to /etc/systemd/system/share-clip.service, starts at boot
+sudo shareclip-server install              # interactive
+sudo shareclip-server install --yes        # no questions: /opt/share-clip + :9090 + defaults
 sudo shareclip-server install --no-start   # enable only, do not start now
 
-# user scope (no root): ~/.config/systemd/user/share-clip.service
+# user scope (no root): binary defaults to ~/.local/bin,
+# unit goes to ~/.config/systemd/user/share-clip.service
 shareclip-server install --user
 loginctl enable-linger <user>   # to survive logout / start without a login session
 
 # print the unit file and the commands without touching anything
 shareclip-server install --dry-run
 
-# uninstall: stop + disable + delete the unit + reload; --purge also deletes the data dir
+# uninstall: stop + disable + delete the unit + reload; --purge also deletes the
+# data directory, the installed executable, the database and the key file
 sudo shareclip-server uninstall
 shareclip-server uninstall --user --purge
 ```
 
+- Installing **copies the currently running executable** to the chosen install
+  location (asked interactively; defaults to `/opt/share-clip/` for the system
+  scope and `~/.local/bin/` for the user scope), and the unit's `ExecStart`
+  points at that copy. Re-running `install` with a fresh build upgrades in
+  place, and even a `go run` temp binary works — the service uses the copy, not
+  the temp file.
 - `install` writes the unit file, then runs `systemctl daemon-reload` and
   `systemctl enable --now <unit>` (with `--no-start`, only `enable`); user-scope
   commands always carry `--user`.
-- Data directory: system scope `/var/lib/share-clip` (created and owned by the
-  unit's `StateDirectory=`; with the default `DynamicUser=yes` it actually lives
+- Data directory (the interactive question asks for the *directory*; the
+  database file is `shareclip.db` inside it): system scope defaults to
+  `/var/lib/share-clip` (created and owned by the unit's `StateDirectory=`;
+  with the default `DynamicUser=yes` it actually lives
   under `/var/lib/private/share-clip`, with `/var/lib/share-clip` a symlink to
-  it), user scope `~/.local/share/share-clip` (the unit creates it with
-  `ExecStartPre=/bin/mkdir -p`). The database defaults to `shareclip.db` inside
-  that directory.
+  it), user scope defaults to `~/.local/share/share-clip`. If you pick a custom
+  directory the installer creates it up front: with `--run-as` it is chowned to
+  that user (recommended); with a dynamic user it can only be relaxed to `0777`
+  and a warning is printed.
 - `install`'s `-a/-d/-l/-m` decide the listen address, database path, history
   limit and payload cap written into `ExecStart` (same defaults as a normal run,
   except the database path, which defaults into the data directory instead of the
@@ -380,15 +436,18 @@ shareclip-server uninstall --user --purge
   added later — goes in through the repeatable `--exec-arg`, e.g.
   `sudo shareclip-server install --exec-arg=-q --exec-arg=-l --exec-arg=1000`,
   which produces
-  `ExecStart=…/shareclip-server -a :9000 -d … -l 500 -m 33554432 -q -l 1000`
+  `ExecStart=…/shareclip-server -a :9090 -d … -l 500 -m 33554432 -q -l 1000`
   (a repeated scalar flag wins, so this also overrides the defaults written
   before it).
-- **Authentication**: on by default. The key is random per start and goes to the
-  journal — `journalctl -u share-clip -f | grep '访问 key'` (add `--user` for the
-  user scope). To pin a key (handy for scripts and autostart) use
-  `--exec-arg=-k --exec-arg=<your-key>`; to disable auth entirely use
-  `--no-auth`. Note that a key written into `ExecStart` lives in a 0644 unit
-  file that other local users can read, so avoid it on shared machines.
+- **Authentication**: on by default with a **persistent fixed key**. The
+  installer generates one (or takes the one you type / pass with `-k`) and
+  saves it to `shareclip.key` right next to the installed executable (default
+  `/opt/share-clip/shareclip.key`, mode 0600); every later start, reboot and
+  re-install keeps using it. The unit carries only
+  `EnvironmentFile=…/shareclip.key`, read by systemd as root, so the key never
+  appears in the unit file, the journal or `ps`. View it with
+  `sudo shareclip-server key`, rotate with `sudo shareclip-server key -r`
+  (restarts the service). Type nothing + `--no-auth` to disable auth entirely.
 - To change more than the startup arguments (environment variables, resource
   limits, dependencies, …), use systemd's own override instead of editing the
   unit file: `sudo systemctl edit share-clip` creates
@@ -404,22 +463,26 @@ shareclip-server uninstall --user --purge
   add `--user` for the user scope (`systemctl --user status share-clip`,
   `journalctl --user -u share-clip -f`).
 
-**Install from a fixed path**: `install` uses the path of the executable that is
-*running right now*. A `go run` temp binary is rejected outright (it will not
-exist after a reboot), and a binary under your home directory (e.g.
-`~/go/bin/shareclip-server`) does not work for the system scope either, because
-the system unit sets `ProtectHome=true` and cannot see home directories. Build
-first, then `sudo install -m755 bin/shareclip-server /usr/local/bin/`, and run
-`install` from that path.
+**Upgrades and where the binary comes from**: the "install location" question
+decides where the executable is copied (default `/opt/share-clip/`). Building
+straight onto the target — `go build -o /opt/share-clip/shareclip-server` — and
+running `install` from there also works; source and target being the same file
+is detected and the copy is skipped.
 
 #### install options
 
+In interactive mode the defaults below are also the per-question defaults; flags
+passed explicitly on the command line suppress their question.
+
 | Short | Long | Default | Description |
 |-------|------|---------|-------------|
-| `-a` | `--addr` | `:9000` | listen address written into `ExecStart` |
-| `-d` | `--db` | `shareclip.db` in the data directory | SQLite database path; empty derives it from the scope |
+| `-y` | `--yes` | false | non-interactive: no questions, use flags and defaults as given |
+| — | `--dir` | `/opt/share-clip` (system) / `~/.local/bin` (user) | install location: the directory the executable is copied into |
+| `-a` | `--addr` | `:9090` | listen address written into `ExecStart` (the interactive prompt also accepts a bare port) |
+| `-d` | `--db` | `shareclip.db` in the data directory | full SQLite database path; empty derives it from the scope |
 | `-l` | `--history-limit` | `500` | how many history entries to keep |
-| `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry |
+| `-m` | `--max-payload` | `33554432` (32 MiB) | max bytes per clipboard entry (asked in MB interactively) |
+| `-k` | `--key` | empty (auto-generate) | access key to write into `shareclip.key` (overwrites); empty = generate new / reuse existing |
 | `-u` | `--user` | false | install a user service (`~/.config/systemd/user`, no root) |
 | `-n` | `--name` | `share-clip` | unit name (without `.service`) |
 | — | `--run-as` | empty (`DynamicUser=yes`) | run the system service as that user; ignored for the user scope |
@@ -437,14 +500,15 @@ first, then `sudo install -m755 bin/shareclip-server /usr/local/bin/`, and run
 | `-u` | `--user` | false | uninstall the user service (`~/.config/systemd/user`) |
 | `-n` | `--name` | `share-clip` | unit name (without `.service`) |
 | — | `--unit-dir` | by scope | override the unit file directory |
-| — | `--purge` | false | also delete the data directory (the database) |
+| — | `--purge` | false | also delete the data directory, the installed executable, the database (incl. `-wal`/`-shm`) and the key file |
 | — | `--dry-run` | false | only print the files to delete and the commands to run |
 
 ## Web UI (server admin page)
 
-`http://<server>:9000/` (listens on all interfaces by default). **The first visit
-asks for the access key** printed in the server startup log; alternatively open
-`http://<server>:9000/?key=<key>` to log in in one step. After that the server
+`http://<server>:9090/` (listens on all interfaces by default). **The first visit
+asks for the access key** (startup log for plain runs, `shareclip-server key`
+for installed services); alternatively open
+`http://<server>:9090/?key=<key>` to log in in one step. After that the server
 issues a session cookie that authorises the page and all of its APIs (the
 "退出" / log-out button in the header revokes it and returns to the login page —
 useful when leaving a shared machine). What the page offers:
