@@ -30,11 +30,13 @@ const (
 	DefaultPort       = "9090"
 )
 
-// dirName 是配置目录名，fileName 是配置文件名，logFileName 是桌面模式日志文件。
+// dirName 是配置目录名，fileName 是配置文件名，logFileName 是桌面模式日志文件，
+// lockFileName 是客户端单实例锁文件（内容由 internal/instancelock 加锁）。
 const (
-	dirName     = "share-clip"
-	fileName    = "config.json"
-	logFileName = "client.log"
+	dirName      = "share-clip"
+	fileName     = "config.json"
+	logFileName  = "client.log"
+	lockFileName = "client.lock"
 )
 
 // Config 是 client 桌面模式的全部持久化设置。
@@ -95,6 +97,17 @@ func LogPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, logFileName), nil
+}
+
+// LockPath 返回客户端单实例锁文件路径（与配置文件同目录）。文件内容由
+// internal/instancelock 加锁，本包只负责给出一个按用户隔离的固定路径：
+// 同一用户在机器上只能有一个客户端，不同用户互不影响。
+func LockPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, lockFileName), nil
 }
 
 // Load 读取配置文件。文件不存在时返回默认配置且 err 为 nil；文件存在但内容

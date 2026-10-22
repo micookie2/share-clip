@@ -24,6 +24,7 @@ import (
 	"github.com/micookie2/share-clip/internal/cli"
 	"github.com/micookie2/share-clip/internal/clientsvc"
 	"github.com/micookie2/share-clip/internal/clientui"
+	"github.com/micookie2/share-clip/internal/instancelock"
 	"github.com/micookie2/share-clip/internal/logx"
 	"github.com/micookie2/share-clip/internal/protocol"
 	"github.com/micookie2/share-clip/internal/tray"
@@ -36,6 +37,43 @@ const defaultUIAddr = "127.0.0.1:9210"
 // logFileMaxBytes 是桌面模式日志文件的轮转阈值：客户端常在托盘里跑几周，
 // 日志不能无限增长。
 const logFileMaxBytes = 2 << 20 // 2 MiB
+
+// alreadyRunningMessage 是单实例检查失败时给用户看的那一行说明。两个客户端
+// 同时监听同一块系统剪贴板，会把对方的广播再写回剪贴板，表现为重复发送和
+// 格式丢失，所以第二个实例必须明确退出而不是「看起来也在工作」。
+const alreadyRunningMessage = "已有另一个 share-clip 客户端在本机运行（同一用户只允许一个实例，否则两个实例会互相改写剪贴板）；请先在托盘/任务管理器里退出它"
+
+// errInstanceAlreadyRunning 只用来把「已有实例」翻译成非零退出码。它直接携带
+// 给用户看的那句话，由 main 的 logx.Fatalf 打印一次；acquireInstanceLock 自己
+// 不再另打一行，否则同一条提示会重复出现。
+var errInstanceAlreadyRunning = errors.New(alreadyRunningMessage)
+
+// acquireInstanceLock 取得当前用户的单实例锁，返回的 release 总是非 nil，
+// 调用方直接 defer release() 即可。
+//
+// 锁文件位于用户配置目录（appconfig.LockPath），桌面模式与控制台模式共用同一
+// 把锁，因此「开机自启的托盘版 + 手动敲命令的 console 版」也会被拦住。
+//
+// 配置目录不可用（只读环境、无 HOME 的 CI 等）时降级为不加锁继续启动：单实例
+// 保护是体验优化，不该把非交互用法直接挡在门外；拿不到锁时留一行警告。
+func acquireInstanceLock() (func(), error) {
+	path, err := appconfig.LockPath()
+	if err != nil {
+		logx.Printf("[client] 无法确定单实例锁路径，继续启动但无法防止多开: %v", err)
+		return func() {}, nil
+	}
+	release, err := instancelock.Acquire(path)
+	if err == nil {
+		return release, nil
+	}
+	if errors.Is(err, instancelock.ErrAlreadyRunning) {
+		// main 的 logx.Fatalf 会用 errInstanceAlreadyRunning 里这句话打印一次；
+		// 这里不再重复打印，否则同一条提示会出现两行。
+		return func() {}, errInstanceAlreadyRunning
+	}
+	logx.Printf("[client] 单实例锁不可用（%s），继续启动但无法防止多开: %v", path, err)
+	return func() {}, nil
+}
 
 func main() {
 	// 先把标准流安顿好再解析参数：-h/-v 与参数报错都要有地方可打印。
@@ -168,6 +206,28 @@ func runDesktop(parent context.Context, build buildinfo.Info, f desktopFlags) er
 		}
 	}
 
+	// 已经有一个在跑的客户端（双击了第二次）：不再起一个进程，直接把它的
+	// 界面打开——两个托盘图标、两份日志只会让人困惑。UI 探测必须排在单实例
+	// 锁之前：第二次双击走的是「打开已有界面」，不是「拒绝启动」。
+	if clientui.Probe(f.UIAddr) {
+		url := "http://" + f.UIAddr
+		logx.Printf("[client] 已有一个客户端在运行，打开它的界面: %s", url)
+		if !f.NoOpen {
+			if err := clientui.OpenBrowser(url); err != nil {
+				logx.Printf("[client] 打开浏览器失败: %v（请手动访问 %s）", err, url)
+			}
+		}
+		return nil
+	}
+
+	// 单实例锁必须在启动 clientsvc/托盘之前拿到，并持有到进程退出（包括中间的
+	// 断线重连），否则两个实例会同时监听、改写同一块剪贴板。
+	releaseInstance, err := acquireInstanceLock()
+	if err != nil {
+		return err
+	}
+	defer releaseInstance()
+
 	svc := clientsvc.New(cfg, build)
 	svc.Start()
 	defer svc.Stop()
@@ -181,19 +241,6 @@ func runDesktop(parent context.Context, build buildinfo.Info, f desktopFlags) er
 		TrayEnabled: trayOK,
 		Quit:        quit,
 	})
-
-	// 已经有一个在跑的客户端（双击了第二次）：不再起一个进程，直接把它的
-	// 界面打开——两个托盘图标、两份日志只会让人困惑。
-	if clientui.Probe(f.UIAddr) {
-		url := "http://" + f.UIAddr
-		logx.Printf("[client] 已有一个客户端在运行，打开它的界面: %s", url)
-		if !f.NoOpen {
-			if err := clientui.OpenBrowser(url); err != nil {
-				logx.Printf("[client] 打开浏览器失败: %v（请手动访问 %s）", err, url)
-			}
-		}
-		return nil
-	}
 
 	url, err := ui.Listen(f.UIAddr)
 	if err != nil {
@@ -326,6 +373,14 @@ func applyFlagOverrides(cfg appconfig.Config, f desktopFlags) appconfig.Config {
 // 没给 -s/-k 时回退到桌面模式保存下来的配置，这样开机自启脚本可以只写
 // `shareclip-client --console`。
 func runConsole(ctx context.Context, build buildinfo.Info, serverAddr, key, name string, pollMs, maxPayload int, quiet bool) error {
+	// 控制台模式与桌面模式共用同一把按用户的单实例锁：本机同时跑两个客户端
+	// （例如开机自启的托盘版 + 手动敲命令的 console 版）会互相改写剪贴板。
+	releaseInstance, err := acquireInstanceLock()
+	if err != nil {
+		return err
+	}
+	defer releaseInstance()
+
 	// 命令行没给的项一律回退到桌面界面保存过的配置；读不到就用零值。
 	saved, err := appconfig.Load()
 	if err != nil {

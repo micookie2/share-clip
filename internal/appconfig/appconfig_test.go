@@ -224,3 +224,25 @@ func TestSaveIsAtomicAndSelfContained(t *testing.T) {
 		}
 	}
 }
+
+func TestLockPath(t *testing.T) {
+	dir := t.TempDir()
+	setConfigHome(t, dir)
+
+	path, err := LockPath()
+	if err != nil {
+		t.Fatalf("LockPath: %v", err)
+	}
+	want := filepath.Join(dir, dirName, lockFileName)
+	if path != want {
+		t.Fatalf("LockPath = %s，期望 %s", path, want)
+	}
+	// 锁文件与配置、日志同目录：同一把锁覆盖桌面模式与控制台模式。
+	logPath, err := LogPath()
+	if err != nil {
+		t.Fatalf("LogPath: %v", err)
+	}
+	if filepath.Dir(logPath) != filepath.Dir(path) {
+		t.Errorf("锁文件与日志不在同一目录: %s vs %s", path, logPath)
+	}
+}
