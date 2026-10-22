@@ -658,6 +658,17 @@ graphical session nor systemd.
   some Excel-specific details can still differ (column widths are ignored by
   Excel's own HTML paste anyway); applications that do not consume HTML only get
   the plain text.
+- **VM/cloud-desktop clipboard agents make local rich-text paste lose its
+  formatting**: spice-vdagent (SPICE cloud desktops), VMware Tools and
+  VirtualBox Guest Additions only mirror plain text. They take over the local
+  clipboard about 150 ms after a copy and drop HTML, so pasting *on the local
+  machine* yields plain text; **the peer is unaffected** — share-clip ignores
+  the degraded plain-text version (the log says "本机剪贴板被其它程序改写为
+  纯文本…已忽略") and keeps the rich rendition on the peers. To restore local
+  rich-text paste, disable that agent's clipboard sharing (e.g. stop
+  `spice-vdagent` and `vdagent-monitor.sh`, at the cost of host↔guest
+  copy/paste); pasting immediately after copying also beats the agent to the
+  clipboard.
 - Web push always targets all online clients; no per-machine targeting yet.
 - Copies made while disconnected are not replayed after reconnecting — just copy
   again.

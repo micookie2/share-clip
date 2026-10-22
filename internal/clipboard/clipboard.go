@@ -138,6 +138,16 @@ func SetWarnf(f func(string, ...any)) {
 	}
 }
 
+// WarnKnownClipboardAgents reports, through the warn callback, guest-side
+// clipboard agents (e.g. spice-vdagent in a SPICE cloud desktop) that take
+// ownership of the local clipboard and only support plain text. They make a
+// locally copied rich text lose its formatting on the local machine while the
+// peers still receive the rich rendition. Call it after SetWarnf; platforms
+// without such known agents do nothing.
+func WarnKnownClipboardAgents() {
+	warnKnownClipboardAgents()
+}
+
 // defaultDowngradeWindow is how long after sharing a rich-text copy a
 // plain-text-only rendition of the same text is treated as a lossy downgrade
 // and ignored. It covers Excel finishing its multi-format write and a
@@ -336,7 +346,9 @@ func (w *Watcher) poll(genuine bool) {
 		w.downgradeIgnored = true
 		w.mu.Unlock()
 		if warn {
-			warnf("clipboard: 富文本被降级为纯文本（疑似第三方程序/竞争实例改写剪贴板），已忽略，避免对端丢失格式")
+			warnf("clipboard: 本机剪贴板被其它程序改写为纯文本（常见于云桌面/虚拟机剪贴板代理，" +
+				"如 spice-vdagent/VMware Tools/VirtualBox 增强功能，它们只支持纯文本），" +
+				"已忽略以免覆盖对端已有的富文本；本机粘贴可能因此丢格式")
 		}
 		return
 	}

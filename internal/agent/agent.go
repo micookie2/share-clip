@@ -140,6 +140,10 @@ func Run(ctx context.Context, cfg Config) error {
 	// Surface clipboard degradations (e.g. a rich write falling back to plain
 	// text) in the client log instead of losing formatting silently.
 	clipboard.SetWarnf(a.logf)
+	// Name known clipboard hijackers up front: a VM/cloud-desktop clipboard
+	// agent (spice-vdagent, VMware Tools, ...) keeps only plain text, so rich
+	// copies lose formatting locally even though peers receive them intact.
+	clipboard.WarnKnownClipboardAgents()
 	a.watcher = clipboard.NewWatcher(backend, a.onLocalChange,
 		clipboard.WithOnError(func(err error) {
 			a.logf("[client] 读取剪贴板出错: %v", err)
