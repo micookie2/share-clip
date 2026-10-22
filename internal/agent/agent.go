@@ -7,6 +7,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image/png"
 	"net/http"
@@ -50,11 +51,12 @@ const (
 
 // Agent watches the clipboard and keeps a WebSocket connection to the server.
 type Agent struct {
-	cfg      Config
-	watcher  *clipboard.Watcher
-	out      chan *protocol.Msg // outbound clip messages
-	incoming chan *protocol.Msg // inbound clip messages, applied off the read path
-	dropped  atomic.Int64
+	cfg       Config
+	watcher   *clipboard.Watcher
+	out       chan *protocol.Msg // outbound clip messages
+	incoming  chan *protocol.Msg // inbound clip messages, applied off the read path
+	dropped   atomic.Int64       // clips dropped before being queued
+	oversized atomic.Int64       // clips skipped because they exceed the payload limit
 
 	// sentLog remembers what this client recently put on the wire so an echo
 	// of its own copy (which the server normally never relays back) cannot
@@ -69,6 +71,14 @@ type sentClip struct {
 	plain  string
 	rich   bool
 	at     time.Time
+
+	// pixels is the canonical decoded-pixel digest of an image send (see
+	// clipboard.PictureDigest), so an echo of the same picture re-encoded by
+	// the round trip is recognized even though the bytes differ. hasPixels is
+	// false for text clips and for images that could not be fingerprint
+	// (malformed or above the decode guard); those still use digest.
+	pixels    [32]byte
+	hasPixels bool
 }
 
 // echoWindow bounds how long after sending a copy an incoming clip is still
@@ -268,6 +278,18 @@ func (a *Agent) writeLoop(ctx context.Context, conn *websocket.Conn, errCh chan<
 			}
 		case m := <-a.out:
 			if err := a.writeMsg(ctx, conn, m); err != nil {
+				if isOversizedClip(err) {
+					// A clip larger than the configured payload limit cannot be
+					// framed. Dropping it is a per-clip failure, not a broken
+					// connection: killing the session here would force a
+					// reconnect and lose every clip queued behind it.
+					n := a.oversized.Add(1)
+					if n <= 3 || n%20 == 0 {
+						a.logf("[client] 剪贴板内容超过单条上限 (%d B > %d B)，已跳过 %d 条: %s",
+							len(m.Payload)+len(m.Payload2), a.maxPayload(), n, m.Summary())
+					}
+					continue
+				}
 				select {
 				case errCh <- err:
 				default:
@@ -276,6 +298,13 @@ func (a *Agent) writeLoop(ctx context.Context, conn *websocket.Conn, errCh chan<
 			}
 		}
 	}
+}
+
+// isOversizedClip reports whether err means the clip was rejected by the
+// protocol payload limit rather than the connection being broken. Such errors
+// are recoverable: writeLoop skips the offending clip and keeps the session.
+func isOversizedClip(err error) bool {
+	return errors.Is(err, protocol.ErrPayloadTooLarge)
 }
 
 // heartbeat sends a WebSocket ping (RFC 6455) and waits for the peer's pong.
@@ -391,14 +420,18 @@ func (a *Agent) handleIncoming(m *protocol.Msg) {
 // rememberSent records content this client just shared so a later echo of it
 // can be recognized. It runs on the watcher goroutine.
 func (a *Agent) rememberSent(c clipboard.Content) {
-	a.sentMu.Lock()
-	defer a.sentMu.Unlock()
-	a.sentLog = append(a.sentLog, sentClip{
+	s := sentClip{
 		digest: c.Digest(),
 		plain:  c.Text,
 		rich:   c.HTML != "",
 		at:     time.Now(),
-	})
+	}
+	if c.Kind == clipboard.KindImage {
+		s.pixels, s.hasPixels = clipboard.PictureDigest(c.PNG)
+	}
+	a.sentMu.Lock()
+	defer a.sentMu.Unlock()
+	a.sentLog = append(a.sentLog, s)
 	if len(a.sentLog) > echoLogMax {
 		a.sentLog = a.sentLog[len(a.sentLog)-echoLogMax:]
 	}
@@ -411,25 +444,64 @@ func (a *Agent) rememberSent(c clipboard.Content) {
 // it would replace the local clipboard with a copy of what the user just
 // copied — the "share-clip clobbered my clipboard" symptom. Echoes are
 // therefore ignored, within echoWindow of the send.
+//
+// Images are additionally compared by decoded pixels: a Windows CF_DIB
+// round trip (or any intermediary re-encoding) yields the same picture with
+// different PNG bytes, so the byte digest alone cannot see the echo.
 func (a *Agent) isOwnEcho(c clipboard.Content) bool {
 	now := time.Now()
 	d := c.Digest()
 	a.sentMu.Lock()
-	defer a.sentMu.Unlock()
-	for len(a.sentLog) > 0 && now.Sub(a.sentLog[0].at) > echoWindow {
-		a.sentLog = a.sentLog[1:]
-	}
+	a.pruneSentLog(now)
 	for _, s := range a.sentLog {
 		if s.digest == d {
+			a.sentMu.Unlock()
 			return true
 		}
 		// A rich copy that came back as plain text only (formatting dropped
 		// somewhere in the round trip) is still the same copy.
 		if s.rich && c.HTML == "" && c.Text != "" && s.plain == c.Text {
+			a.sentMu.Unlock()
+			return true
+		}
+	}
+	needPixels := false
+	if c.Kind == clipboard.KindImage {
+		for _, s := range a.sentLog {
+			if s.hasPixels {
+				needPixels = true
+				break
+			}
+		}
+	}
+	a.sentMu.Unlock()
+	if !needPixels {
+		return false
+	}
+
+	// Decode outside sentMu: fingerprinting a picture can be expensive, and
+	// the clipboard watcher goroutine calls rememberSent under the same lock.
+	pixels, ok := clipboard.PictureDigest(c.PNG)
+	if !ok {
+		return false
+	}
+	a.sentMu.Lock()
+	defer a.sentMu.Unlock()
+	a.pruneSentLog(time.Now())
+	for _, s := range a.sentLog {
+		if s.hasPixels && s.pixels == pixels {
 			return true
 		}
 	}
 	return false
+}
+
+// pruneSentLog forgets sends older than echoWindow. The caller must hold
+// sentMu.
+func (a *Agent) pruneSentLog(now time.Time) {
+	for len(a.sentLog) > 0 && now.Sub(a.sentLog[0].at) > echoWindow {
+		a.sentLog = a.sentLog[1:]
+	}
 }
 
 func contentFromMessage(m *protocol.Msg) (clipboard.Content, bool) {
