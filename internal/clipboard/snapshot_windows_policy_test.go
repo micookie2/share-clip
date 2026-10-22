@@ -156,9 +156,16 @@ func winOpenSnapshot(t *testing.T, s *winSource) (Content, []byte) {
 func TestSnapshotWindowsExcelLikeTextWinsTextNotPicture(t *testing.T) {
 	log := winInstallWarnf(t)
 
+	const frag = "<b>sheet1!A1 单元格</b>"
+	block := htmlToCFHTML(frag)
+	expectedHTML, ok := cfhtmlDocument(block)
+	if !ok {
+		t.Fatal("cfhtmlDocument failed on our own CF_HTML block")
+	}
+
 	s := newWinSource(cfText, cfUnicodeText, cfDIB).offerHTML()
 	s.data[cfUnicodeText] = winUTF16Bytes("sheet1!A1 单元格")
-	s.data[winTestHTMLFormat] = htmlToCFHTML("<b>sheet1!A1 单元格</b>")
+	s.data[winTestHTMLFormat] = block
 	s.data[cfDIB] = winDIBBytes(t, winTestImage())
 
 	text, rawDIB := winOpenSnapshot(t, s)
@@ -168,8 +175,11 @@ func TestSnapshotWindowsExcelLikeTextWinsTextNotPicture(t *testing.T) {
 	if text.Text != "sheet1!A1 单元格" {
 		t.Fatalf("text = %q", text.Text)
 	}
-	if text.HTML != "<b>sheet1!A1 单元格</b>" {
-		t.Fatalf("HTML = %q", text.HTML)
+	if text.HTML != expectedHTML {
+		t.Fatalf("HTML = %q, want the full document %q", text.HTML, expectedHTML)
+	}
+	if !strings.Contains(text.HTML, frag) {
+		t.Fatalf("full document lost the fragment: %q", text.HTML)
 	}
 	if rawDIB != nil {
 		t.Fatal("CF_DIB must not be read when usable text wins (would force Excel's rendered picture)")
@@ -199,6 +209,49 @@ func TestSnapshotWindowsExcelLikeTextWinsTextNotPicture(t *testing.T) {
 		if !strings.Contains(msgs[0], want) {
 			t.Errorf("warning %q does not mention %q", msgs[0], want)
 		}
+	}
+}
+
+// TestSnapshotWindowsHTMLKeepsDocumentContext covers Excel's real CF_HTML
+// shape: the formatting context (<style> rules, <meta> in the document head)
+// lives outside the StartFragment..EndFragment range. The snapshot must carry
+// the full document, not just the fragment, or the formatting is lost when the
+// peer pastes it.
+func TestSnapshotWindowsHTMLKeepsDocumentContext(t *testing.T) {
+	const frag = `<p class="xl65">styled cell</p>`
+	doc := `<html><head><meta name="ProgId" content="Excel.Sheet">` +
+		`<style>.xl65{color:#ff0000}</style></head><body>` +
+		`<!--StartFragment-->` + frag + `<!--EndFragment--></body></html>`
+	block := htmlToCFHTML(doc)
+	expected, ok := cfhtmlDocument(block)
+	if !ok {
+		t.Fatal("cfhtmlDocument failed on an Excel-shaped CF_HTML block")
+	}
+
+	s := newWinSource(cfUnicodeText).offerHTML()
+	s.data[cfUnicodeText] = winUTF16Bytes("styled cell")
+	s.data[winTestHTMLFormat] = block
+
+	text, rawDIB := winOpenSnapshot(t, s)
+	if text.Kind != KindText || text.Text != "styled cell" {
+		t.Fatalf("got %+v", text)
+	}
+	if rawDIB != nil {
+		t.Fatalf("no CF_DIB expected, got %d bytes", len(rawDIB))
+	}
+	if text.HTML != expected {
+		t.Fatalf("HTML = %q, want full document %q", text.HTML, expected)
+	}
+	for _, want := range []string{
+		"<style>", ".xl65{color:#ff0000}", `<meta name="ProgId"`, frag,
+	} {
+		if !strings.Contains(text.HTML, want) {
+			t.Errorf("full document lost %q: %q", want, text.HTML)
+		}
+	}
+	// The full document must survive a re-encode/read round trip unchanged.
+	if roundTrip, ok := cfhtmlDocument(htmlToCFHTML(text.HTML)); !ok || roundTrip != text.HTML {
+		t.Fatalf("full-document round trip = %q ok=%v, want %q", roundTrip, ok, text.HTML)
 	}
 }
 

@@ -39,6 +39,7 @@ import (
 	"crypto/sha256"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Kind describes what kind of content a clipboard holds.
@@ -68,7 +69,13 @@ func (k Kind) String() string {
 type Content struct {
 	Kind Kind
 	Text string // UTF-8 text, only when Kind == KindText
-	HTML string // HTML rendition, only when Kind == KindText (may be empty)
+	// HTML is the rich-text rendition, only when Kind == KindText (may be
+	// empty). When the platform provides a full HTML document (the CF_HTML
+	// StartHTML..EndHTML range, as Windows owners like Excel do), it is stored
+	// whole so formatting context such as <style> and <meta> is preserved; a
+	// bare fragment from an owner or peer that only provides one is kept as
+	// that fragment.
+	HTML string
 	PNG  []byte // PNG encoded bytes, only when Kind == KindImage
 }
 
@@ -131,6 +138,13 @@ func SetWarnf(f func(string, ...any)) {
 	}
 }
 
+// defaultDowngradeWindow is how long after sharing a rich-text copy a
+// plain-text-only rendition of the same text is treated as a lossy downgrade
+// and ignored. It covers Excel finishing its multi-format write and a
+// competing clipboard writer settling, while still allowing a deliberate later
+// plain copy to be shared.
+const defaultDowngradeWindow = 2 * time.Second
+
 // Watcher monitors one Backend from a single goroutine and reports local
 // clipboard changes through OnChange. All backend access is serialized by the
 // watcher, so ApplyRemote may be called from other goroutines (e.g. the
@@ -143,6 +157,14 @@ type Watcher struct {
 	mu         sync.Mutex
 	lastDigest [32]byte
 	suppressed *[32]byte // digest we just wrote ourselves via ApplyRemote
+
+	// Downgrade guard: the last content accepted for sharing and when it was
+	// accepted. A later snapshot with the same plain text but without the HTML
+	// is a lossy downgrade of it and is ignored for a short window.
+	lastContent      Content
+	lastContentAt    time.Time
+	downgradeWindow  time.Duration
+	downgradeIgnored bool
 
 	stop chan struct{}
 	done chan struct{}
@@ -165,11 +187,12 @@ func WithOnError(f func(error)) WatcherOption {
 // via ApplyRemote is never reported back.
 func NewWatcher(b Backend, onChange func(Content), opts ...WatcherOption) *Watcher {
 	w := &Watcher{
-		backend:  b,
-		onChange: onChange,
-		onError:  func(error) {},
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		backend:         b,
+		onChange:        onChange,
+		onError:         func(error) {},
+		downgradeWindow: defaultDowngradeWindow,
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(w)
@@ -188,6 +211,7 @@ func (w *Watcher) Start() {
 		if c, err := w.backend.Snapshot(); err == nil {
 			w.mu.Lock()
 			w.lastDigest = c.Digest()
+			w.observe(c)
 			w.mu.Unlock()
 		}
 
@@ -252,6 +276,27 @@ func (w *Watcher) ApplyRemote(c Content) error {
 	return nil
 }
 
+// isLossyDowngrade reports whether c is the plain-text version of the rich
+// text we accepted most recently: same KindText text, the previous content had
+// HTML and c does not. The caller must hold w.mu.
+func (w *Watcher) isLossyDowngrade(c Content) bool {
+	if c.Kind != KindText || c.HTML != "" {
+		return false
+	}
+	prev := w.lastContent
+	if prev.Kind != KindText || prev.HTML == "" || prev.Text != c.Text {
+		return false
+	}
+	return time.Since(w.lastContentAt) <= w.downgradeWindow
+}
+
+// observe records c as the last accepted clipboard content for the downgrade
+// guard. The caller must hold w.mu.
+func (w *Watcher) observe(c Content) {
+	w.lastContent = c
+	w.lastContentAt = time.Now()
+}
+
 func (w *Watcher) poll(genuine bool) {
 	w.mu.Lock()
 
@@ -270,6 +315,8 @@ func (w *Watcher) poll(genuine bool) {
 		if d == *w.suppressed {
 			w.suppressed = nil
 			w.lastDigest = d
+			w.observe(c)
+			w.downgradeIgnored = false
 			w.mu.Unlock()
 			return
 		}
@@ -278,18 +325,40 @@ func (w *Watcher) poll(genuine bool) {
 		w.suppressed = nil
 	}
 
-	if d == w.lastDigest {
+	// Downgrade guard: an application, a clipboard manager or a competing
+	// share-clip instance can rewrite a just-shared rich-text copy as plain
+	// text (or Excel's multi-format write is caught mid-flight). Sharing that
+	// plain version would overwrite the rich clipboard on every peer, so it is
+	// ignored — and not made the new lastDigest, so repeated degraded snapshots
+	// stay ignored — until the content genuinely changes.
+	if w.isLossyDowngrade(c) {
+		warn := !w.downgradeIgnored
+		w.downgradeIgnored = true
 		w.mu.Unlock()
-		if genuine && !c.Empty() {
-			// A real copy action with identical content (Windows can detect
-			// these): re-share it.
-			cc := c
-			cb := w.onChange
-			cb(cc)
+		if warn {
+			warnf("clipboard: 富文本被降级为纯文本（疑似第三方程序/竞争实例改写剪贴板），已忽略，避免对端丢失格式")
 		}
 		return
 	}
+	w.downgradeIgnored = false
+
+	if d == w.lastDigest {
+		if genuine && !c.Empty() {
+			// A real copy action with identical content (Windows can detect
+			// these): re-share it. Refreshing the baseline also restarts the
+			// downgrade window for this rich rendition.
+			w.observe(c)
+			cc := c
+			cb := w.onChange
+			w.mu.Unlock()
+			cb(cc)
+			return
+		}
+		w.mu.Unlock()
+		return
+	}
 	w.lastDigest = d
+	w.observe(c)
 	if c.Empty() {
 		w.mu.Unlock()
 		return // nothing to share

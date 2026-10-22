@@ -25,7 +25,20 @@ and autostart entries want.
 Supports **text**, **rich text (HTML)** and **images** (PNG). **Copying files
 is not supported** and is silently ignored. Rich-text sync carries both a
 plain-text and an HTML rendition, so pasting into a browser/Office editor keeps
-its formatting while pasting into a plain-text field still yields plain text.
+its formatting while pasting into a plain-text field still yields plain text. On
+Windows, rich text is encoded as CF_HTML per Microsoft's
+[HTML Clipboard Format](https://learn.microsoft.com/en-us/windows/win32/dataxchg/html-clipboard-format):
+the **full HTML document** travels between machines (including `<style>` classes
+and `<meta name=ProgId content=Excel.Sheet>` formatting context), not just the
+`<!--StartFragment-->` fragment, so copying from Excel/Word on one machine and
+pasting into Excel/Word on another keeps the formatting (Linux uses the
+`text/html` target instead). Limitation: Excel's native clipboard formats
+(Biff/XML Spreadsheet, pivot tables, …) are not transported, so some
+Excel-specific details (e.g. column widths) can still differ — Excel itself
+ignores column widths when pasting HTML; applications that do not consume HTML
+only get the plain text. Old and new clients interoperate, but **both ends must
+be upgraded** to get full formatting fidelity (older peers still transfer only
+the fragment, so formatting may degrade).
 
 ```
    Windows box A                 Linux box B
@@ -359,11 +372,12 @@ line win over the saved config).
   `pollMs`, `maxPayload`. Desktop mode also writes a log file `client.log` next
   to it, rotated to `client.log.old` at 2 MiB — a tray app has no visible
   console, so this file is the on-disk record.
-- **Single instance**: a second double-click first probes the fixed port
-  `127.0.0.1:9210` for a running share-clip client and just re-opens its page
-  instead of starting a second process; if something else holds that port the UI
-  falls back to a random port (noted in the log), and a second double-click then
-  does start a second process.
+- **Single instance**: the client now enforces a single instance per user and
+  machine. Starting it again (including `--console`) exits with a clear message;
+  a desktop double-click opens the running instance's local page instead of
+  starting a second process. The local page still defaults to
+  `127.0.0.1:9210`; if another program holds that port the UI falls back to a
+  random port (noted in the log).
 - **Windows**: the client is linked as a **GUI-subsystem** binary
   (`make build-windows` passes `-H=windowsgui`), so Windows never allocates a
   console for it and no terminal window sits behind the tray icon (the old
@@ -613,17 +627,13 @@ graphical session nor systemd.
   D-Bus session bus and needs a panel that supports it (KDE, XFCE, MATE,
   Cinnamon, GNOME with an AppIndicator extension, …); without a tray the client
   still runs, but quitting is only possible from the local page's button.
-- Single-instance detection relies on the fixed port `127.0.0.1:9210`: if another
-  program holds it, the UI falls back to a random port (the log says so) and a
-  second double-click starts a second client process.
-- **Do not run two client instances on the same machine**: a second desktop-mode
-  double-click is caught by the single-instance probe, but `--console` and
-  desktop mode can coexist (or a different `--ui-addr` port can be used) and
-  start two. Both watch the same clipboard, so what one of them broadcasts is
-  received by the other and written back into the local clipboard as remote
-  content — possibly replacing what you just copied (e.g. text turning into an
-  image or something else). Only the local UI port is probed; there is no
-  process-level mutex.
+- Single-instance enforcement is per user (the lock file lives in that user's
+  config directory): a second client exits with a clear message instead of
+  running alongside the first, and a desktop double-click just opens the running
+  instance's local page. The local page still defaults to the fixed port
+  `127.0.0.1:9210`; if another program holds it, the UI falls back to a random
+  port (noted in the log). A different OS user (or a second instance started
+  with another `XDG_CONFIG_HOME`/config directory) is outside that lock.
 - Pausing sync disconnects from the server: while paused nothing is sent and
   nothing is received, and resuming reconnects immediately; copies made while
   paused are not replayed (same as while disconnected).
@@ -643,6 +653,11 @@ graphical session nor systemd.
   HTML is preferred (formatting is kept) and plain-text-only paste targets (like
   a terminal) may get nothing. X11 and Windows write both plain text and HTML
   and have no such limitation.
+- Rich text syncs as standard HTML: Excel's native clipboard formats
+  (Biff/XML Spreadsheet, pivot tables, column widths, …) are not transported, so
+  some Excel-specific details can still differ (column widths are ignored by
+  Excel's own HTML paste anyway); applications that do not consume HTML only get
+  the plain text.
 - Web push always targets all online clients; no per-machine targeting yet.
 - Copies made while disconnected are not replayed after reconnecting — just copy
   again.

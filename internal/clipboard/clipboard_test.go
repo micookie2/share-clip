@@ -435,3 +435,128 @@ func suppressionArmed(w *Watcher) bool {
 	defer w.mu.Unlock()
 	return w.suppressed != nil
 }
+
+// warnCollector records warnf output (the watcher goroutine may emit warnings,
+// so access is mutex-guarded).
+type warnCollector struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (c *warnCollector) add(format string, args ...any) {
+	c.mu.Lock()
+	c.msgs = append(c.msgs, format)
+	c.mu.Unlock()
+}
+
+func (c *warnCollector) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.msgs)
+}
+
+// collectWarnf records warnf output for the duration of the test.
+func collectWarnf(t *testing.T) *warnCollector {
+	t.Helper()
+	c := &warnCollector{}
+	prev := warnf
+	SetWarnf(c.add)
+	t.Cleanup(func() { SetWarnf(prev) })
+	return c
+}
+
+// TestWatcherIgnoresRichToPlainDowngrade covers a rich-text copy being
+// observed again moments later as plain text only (Excel finishing its
+// multi-format write, a clipboard manager or a competing instance rewriting
+// the clipboard). Reporting that would overwrite every peer's rich clipboard,
+// so it must be ignored — without becoming the new lastDigest — and warned
+// about only once.
+func TestWatcherIgnoresRichToPlainDowngrade(t *testing.T) {
+	b := &fakeBackend{}
+	rec := &recorder{}
+	warns := collectWarnf(t)
+	w := NewWatcher(b, rec.add)
+	w.downgradeWindow = 150 * time.Millisecond
+	w.Start()
+	defer w.Stop()
+	time.Sleep(20 * time.Millisecond) // prime
+
+	rich := Content{Kind: KindText, Text: "hello", HTML: "<b>hello</b>"}
+	b.set(rich)
+	waitFor(t, 2*time.Second, func() bool { return rec.len() == 1 })
+	if got := rec.item(0); got.HTML != rich.HTML {
+		t.Fatalf("rich copy not shared: %+v", got)
+	}
+
+	// Degraded plain version within the window: ignored.
+	b.set(Content{Kind: KindText, Text: "hello"})
+	time.Sleep(120 * time.Millisecond)
+	if rec.len() != 1 {
+		t.Fatalf("degraded plain text was reported: %+v", rec.item(1))
+	}
+
+	// Repeated degraded snapshots stay ignored (lastDigest was not updated),
+	// and only one warning is logged.
+	b.set(Content{Kind: KindText, Text: "hello"})
+	time.Sleep(120 * time.Millisecond)
+	if rec.len() != 1 {
+		t.Fatalf("repeated degraded snapshot was reported: %+v", rec.item(1))
+	}
+	if n := warns.len(); n != 1 {
+		t.Fatalf("want exactly one downgrade warning, got %d", n)
+	}
+}
+
+// TestWatcherSharesPlainAfterDowngradeWindow verifies the guard is not
+// permanent: once the window since the rich copy has passed, a plain-text
+// snapshot of the same text is a genuine change and is shared.
+func TestWatcherSharesPlainAfterDowngradeWindow(t *testing.T) {
+	b := &fakeBackend{}
+	rec := &recorder{}
+	warns := collectWarnf(t)
+	w := NewWatcher(b, rec.add)
+	w.downgradeWindow = 120 * time.Millisecond
+	w.Start()
+	defer w.Stop()
+	time.Sleep(20 * time.Millisecond) // prime
+
+	b.set(Content{Kind: KindText, Text: "hello", HTML: "<b>hello</b>"})
+	waitFor(t, 2*time.Second, func() bool { return rec.len() == 1 })
+
+	// No clipboard action for longer than the window (the fake backend only
+	// polls on events), so the rich share falls outside it.
+	time.Sleep(200 * time.Millisecond)
+
+	b.set(Content{Kind: KindText, Text: "hello"})
+	waitFor(t, 2*time.Second, func() bool { return rec.len() == 2 })
+	if got := rec.item(1); got.HTML != "" || got.Text != "hello" {
+		t.Fatalf("plain copy after the window not shared: %+v", got)
+	}
+	if n := warns.len(); n != 0 {
+		t.Fatalf("no downgrade warning expected, got %d", n)
+	}
+}
+
+// TestWatcherSharesDifferentTextAfterRich covers the guard only matching the
+// same text: a different plain text is a normal copy.
+func TestWatcherSharesDifferentTextAfterRich(t *testing.T) {
+	b := &fakeBackend{}
+	rec := &recorder{}
+	warns := collectWarnf(t)
+	w := NewWatcher(b, rec.add)
+	w.Start()
+	defer w.Stop()
+	time.Sleep(20 * time.Millisecond) // prime
+
+	b.set(Content{Kind: KindText, Text: "one", HTML: "<b>one</b>"})
+	waitFor(t, 2*time.Second, func() bool { return rec.len() == 1 })
+
+	b.set(Content{Kind: KindText, Text: "two"})
+	waitFor(t, 2*time.Second, func() bool { return rec.len() == 2 })
+	if got := rec.item(1); got.Text != "two" || got.HTML != "" {
+		t.Fatalf("different text not shared normally: %+v", got)
+	}
+	if n := warns.len(); n != 0 {
+		t.Fatalf("no downgrade warning expected, got %d", n)
+	}
+}

@@ -53,12 +53,18 @@ func registerClipboardFormat(name string) uint32 {
 
 // winBackend talks to the Win32 clipboard API.
 type winBackend struct {
-	lastSeq uint32
+	// seq debounces and rebases the clipboard sequence number (see
+	// clipboard_seq.go); it is shared by the watcher goroutine (WaitForEvent)
+	// and the apply goroutine (Snapshot via ApplyRemote), hence internally
+	// mutex-guarded.
+	seq *seqWatcher
 }
 
-// NewBackend constructs the Windows clipboard backend.
+// NewBackend constructs the Windows clipboard backend. The tracked clipboard
+// sequence number is seeded with the current value so a pre-existing clipboard
+// does not look like a fresh copy event when monitoring starts.
 func NewBackend(pollIntervalMs int) (Backend, error) {
-	return &winBackend{}, nil
+	return &winBackend{seq: newSeqWatcher(clipboardSequenceNumber, realSeqClock)}, nil
 }
 
 // Snapshot reads the current clipboard with a text-first policy: usable plain
@@ -66,9 +72,11 @@ func NewBackend(pollIntervalMs int) (Backend, error) {
 // an image rendition of it (Excel cell/range copies offer text, HTML and a
 // picture). The image format is only read when there is no usable text, so a
 // text copy is shared as text and Excel is not asked to render its delayed
-// picture. When CF_HTML is offered alongside text, the rich-text rendition is
-// captured too. A single unreadable format does not abort the snapshot; the
-// remaining formats are still tried.
+// picture. When CF_HTML is offered alongside text, the FULL HTML document is
+// captured (not just its StartFragment..EndFragment range), so formatting
+// context such as Excel's <style> rules and <meta> survives the round trip. A
+// single unreadable format does not abort the snapshot; the remaining formats
+// are still tried.
 //
 // Only raw bytes are read while the clipboard is open; decoding/PNG-encoding a
 // bitmap happens afterwards in windowsSnapshotContent, so a large image copy
@@ -105,7 +113,16 @@ func (b *winBackend) Snapshot() (Content, error) {
 	if err != nil {
 		return Content{}, err
 	}
-	return windowsSnapshotContent(textContent, rawDIB)
+	// Rebase as soon as the clipboard is closed: the sequence bumps caused by
+	// our own GetClipboardData calls — delayed-rendered formats are materialised
+	// by reading them — must be absorbed instead of looking like new copy
+	// events to WaitForEvent. This has to happen BEFORE the image decode/PNG
+	// encode below: that can take up to hundreds of milliseconds for a large
+	// picture, and a genuine copy landing in that window must not be swallowed
+	// as self-induced.
+	b.seq.rebase()
+	content, cerr := windowsSnapshotContent(textContent, rawDIB)
+	return content, cerr
 }
 
 // Write puts text or image content on the clipboard.
@@ -152,20 +169,22 @@ func (b *winBackend) writeText(text, html string) error {
 			}
 			return err
 		}
-		r, _, e1 := procSetClipboardData.Call(cfUnicodeText, hText)
-		if r == 0 {
-			procGlobalFree.Call(hText)
-			if hasHTML {
-				procGlobalFree.Call(hHTML)
-			}
-			return fmt.Errorf("clipboard: SetClipboardData(CF_UNICODETEXT): %v", e1)
-		}
+		// Windows clipboard convention: formats carrying the most information
+		// must be placed first, so consumers that stop at the first format they
+		// understand still get the richest rendition. Write CF_HTML before
+		// CF_UNICODETEXT.
 		if hasHTML {
 			r, _, e1 := procSetClipboardData.Call(uintptr(cfHTML), hHTML)
 			if r == 0 {
 				procGlobalFree.Call(hHTML)
+				procGlobalFree.Call(hText)
 				return fmt.Errorf("clipboard: SetClipboardData(CF_HTML): %v", e1)
 			}
+		}
+		r, _, e1 := procSetClipboardData.Call(cfUnicodeText, hText)
+		if r == 0 {
+			procGlobalFree.Call(hText)
+			return fmt.Errorf("clipboard: SetClipboardData(CF_UNICODETEXT): %v", e1)
 		}
 		return nil
 	})
@@ -197,23 +216,13 @@ func (b *winBackend) writeImage(pngBytes []byte) error {
 	})
 }
 
-// WaitForEvent blocks until the clipboard sequence number changes (every real
-// copy action bumps it, including re-copies of identical content).
+// WaitForEvent blocks until a copy action has settled. Every real copy bumps
+// the clipboard sequence number (even re-copies of identical content), but one
+// copy can bump it several times — and our own format reads bump it too — so
+// the watcher waits for the number to stay quiet and absorbs self-induced bumps
+// (see seqWatcher). It reports false promptly when stop closes.
 func (b *winBackend) WaitForEvent(stop <-chan struct{}) bool {
-	t := time.NewTicker(150 * time.Millisecond)
-	defer t.Stop()
-	for {
-		seq := clipboardSequenceNumber()
-		if seq != b.lastSeq {
-			b.lastSeq = seq
-			return true
-		}
-		select {
-		case <-stop:
-			return false
-		case <-t.C:
-		}
-	}
+	return b.seq.wait(stop)
 }
 
 // --- Win32 plumbing ---------------------------------------------------------

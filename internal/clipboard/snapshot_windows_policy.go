@@ -92,8 +92,8 @@ func snapshotFromFormats(src clipboardSource) (textContent Content, rawDIB []byt
 			if err != nil {
 				// Rich text is a bonus; plain text is already usable.
 				warnf("clipboard: read HTML Format failed; sharing plain text only: %v", err)
-			} else if fragment, ok := htmlFromCFHTML(raw); ok {
-				html = fragment
+			} else if doc, ok := htmlFromCFHTML(raw); ok {
+				html = doc
 			}
 		}
 		return Content{Kind: KindText, Text: text, HTML: html}, nil, nil
@@ -173,17 +173,17 @@ func clipboardFormatName(format, htmlFormat uint32) string {
 	return fmt.Sprintf("format#%d", format)
 }
 
-// htmlFromCFHTML extracts the fragment from a CF_HTML block, returning "" when
-// the block is empty or not recognisable.
+// htmlFromCFHTML extracts the HTML from a CF_HTML block, returning "" when the
+// block is empty or not recognisable. It keeps the FULL document
+// (cfhtmlDocument, i.e. the CF_HTML StartHTML..EndHTML range) rather than only
+// the StartFragment..EndFragment range: Excel, Word and browsers put the
+// formatting context into the document head (<style> rules, <meta>), and
+// dropping it makes the pasted content lose its formatting.
 func htmlFromCFHTML(raw []byte) (string, bool) {
 	if len(raw) == 0 {
 		return "", false
 	}
-	frag, ok := cfhtmlFragment(raw)
-	if !ok {
-		return "", false
-	}
-	return string(frag), true
+	return cfhtmlDocument(raw)
 }
 
 // utf16BytesToString decodes little-endian UTF-16 clipboard bytes (as stored
