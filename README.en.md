@@ -71,6 +71,13 @@ the fragment, so formatting may degrade).
   local clipboard *actually presents* after the write, so even when Windows
   stores a received PNG as a CF_DIB bitmap and hands it back re-encoded with
   different bytes, the machine does not mistake it for a fresh local copy.
+- A plain-text-only rendition of the text already on the local clipboard is
+  **not written**: when the incoming content has no HTML but the local clipboard
+  holds the same text *with* formatting, the local rich copy is kept (the client
+  log says "对端只发来纯文本版本…保留本机格式"). The peer's formatting may have
+  been lost in transit (e.g. a VM/cloud-desktop clipboard agent that mirrors only
+  plain text), and applying it would silently strip the local one; content that
+  differs, or that carries its own HTML, is still applied normally.
 - A copy carrying both text and an image is treated as **text first**: when
   usable text is present (non-empty and not a file-URI list) it is synced — with
   the HTML rendition attached when `text/html` is offered — and an image is read
@@ -583,7 +590,8 @@ internal/clipboard/     cross-platform clipboard abstraction + watcher
   clipboard_linux.go    Linux: xclip / wl-clipboard; format listing, text
                         first, rich text, image fallback, non-PNG → PNG
                         conversion
-  x11owner_linux.go     X11: native CLIPBOARD selection owner (text/plain + text/html)
+  x11owner_linux.go     X11: native CLIPBOARD selection owner (ICCCM protocol targets
+                        plus text/plain and text/html)
   x11watch_linux.go     X11: XFixes copy-event listener (falls back to polling)
 internal/buildinfo/     version/commit/build time (-ldflags; logs, -v, web UI)
 internal/dib/           pure-Go DIB↔PNG codec (Windows images)

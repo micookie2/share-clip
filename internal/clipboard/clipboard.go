@@ -37,6 +37,7 @@ package clipboard
 
 import (
 	"crypto/sha256"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -252,9 +253,23 @@ func (w *Watcher) Stop() {
 	<-w.done
 }
 
+// ErrKeptLocalRich reports that incoming content was a plain-text rendition of
+// the rich text already on the local clipboard, so it was NOT applied: the
+// local formatted copy is richer than what arrived and replacing it would be a
+// silent downgrade. Callers should treat it as "nothing to do", not as failure.
+var ErrKeptLocalRich = errors.New("clipboard: incoming content is a plain-text downgrade of the local rich text")
+
 // ApplyRemote writes network-received content into the clipboard while arming
 // echo suppression: the next observation of that content is recognized as our
 // own write and is not re-shared.
+//
+// A plain-text-only rendition of the rich text already on the clipboard is
+// refused with ErrKeptLocalRich instead of being written: the peer's copy lost
+// its HTML somewhere (a VM/cloud-desktop clipboard agent that only mirrors
+// plain text, or a source application that never offered HTML), and applying it
+// would silently turn the local formatted copy into an unformatted one — the
+// "share-clip 把我的富文本改成了纯文本" symptom. Content that differs, or that
+// carries its own HTML, is still applied normally.
 //
 // The suppression key is the content the *platform* presents after the write,
 // not necessarily the bytes that were handed over. Writing a PNG to the
@@ -273,6 +288,9 @@ func (w *Watcher) ApplyRemote(c Content) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.isPlainDowngradeOfLocal(c) {
+		return ErrKeptLocalRich
+	}
 	if err := w.backend.Write(c); err != nil {
 		// The write failed, so the clipboard is unchanged; do not arm any
 		// suppression that could swallow a later genuine local copy.
@@ -284,6 +302,19 @@ func (w *Watcher) ApplyRemote(c Content) error {
 	}
 	w.suppressed = &d
 	return nil
+}
+
+// isPlainDowngradeOfLocal reports whether c is a plain-text-only rendition of
+// the rich text currently on the clipboard. The caller must hold w.mu.
+func (w *Watcher) isPlainDowngradeOfLocal(c Content) bool {
+	if c.Kind != KindText || c.HTML != "" || c.Text == "" {
+		return false
+	}
+	cur, err := w.backend.Snapshot()
+	if err != nil {
+		return false
+	}
+	return cur.Kind == KindText && cur.HTML != "" && cur.Text == c.Text
 }
 
 // isLossyDowngrade reports whether c is the plain-text version of the rich

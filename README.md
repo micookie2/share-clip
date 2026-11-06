@@ -64,6 +64,11 @@ Excel/Word 仍能保留格式（Linux 侧对应 `text/html` 目标）。局限�
   回传，本机不会再拿它覆盖剪贴板——否则会出现“刚复制完，粘贴却变成纯文本”
   （富文本的 HTML 被回传的纯文本覆盖）。图片回传按**解码后的画面**识别（而非
   只比对字节），因此同一张图被对端重新编码后回传也不会覆盖本机剪贴板。
+- **不拿纯文本覆盖本机同内容的富文本**：收到的内容若只是纯文本（没有 HTML）、
+  而本机剪贴板上已经有**同一段文字且带格式**的版本，就保留本机的富文本不写入
+  （日志会记一条“对端只发来纯文本版本…保留本机格式”）。对端的格式可能是在半路
+  丢掉的（例如虚拟机/云桌面剪贴板代理只同步纯文本），若照写就会把本机好好的
+  格式覆盖成纯文本。内容不同、或对端自带 HTML 时仍照常写入。
 - 同时携带文本与图片的复制以**文本优先**：只要剪贴板上的文本可用（非空、不是
   文件 URI 列表）就同步文本（有 `text/html` 时一并携带 HTML）；只有没有可用
   文本（截图、图片编辑器等）时才取图片，非 PNG 编码（JPEG/GIF/BMP/TIFF/WebP）
@@ -489,7 +494,7 @@ internal/auth/          访问 key 生成/校验（恒定时间比较）+ 管理
 internal/clipboard/     跨平台剪贴板抽象 + Watcher（防回环/去重语义）
   clipboard_windows.go  Win32：CF_UNICODETEXT / CF_HTML / CF_DIB（stdlib syscall）
   clipboard_linux.go    Linux：xclip / wl-clipboard，枚举格式+文本优先+富文本+图片兜底+多格式转 PNG
-  x11owner_linux.go     X11：原生 CLIPBOARD 选择所有者（同时提供 text/plain 与 text/html）
+  x11owner_linux.go     X11：原生 CLIPBOARD 选择所有者（ICCCM 协议 target + text/plain 与 text/html）
   x11watch_linux.go     X11：XFixes 复制事件监听（事件驱动，不可用时退回轮询）
 internal/buildinfo/     版本号/commit/构建时间（-ldflags 注入，日志、-v、Web 共用）
 internal/dib/           纯 Go DIB↔PNG 编解码（Windows 图片用）

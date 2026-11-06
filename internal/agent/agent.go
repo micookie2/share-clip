@@ -415,6 +415,13 @@ func (a *Agent) handleIncoming(m *protocol.Msg) {
 		return
 	}
 	if err := a.watcher.ApplyRemote(content); err != nil {
+		if errors.Is(err, clipboard.ErrKeptLocalRich) {
+			// The peer sent the same text without its formatting; the local
+			// copy is richer, so it is kept rather than silently downgraded.
+			a.logf("[client] 对端只发来纯文本版本，本机已有同内容的富文本，保留本机格式不改写: %s",
+				m.Summary())
+			return
+		}
 		a.logf("[client] 写入剪贴板失败: %v", err)
 	} else {
 		a.logf("[client] 已写入本机剪贴板: %s", m.Summary())
